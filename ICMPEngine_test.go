@@ -2,13 +2,13 @@ package icmpengine_test
 
 import (
 	"fmt"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/EdgeCast/icmpengine"
 	hclog "github.com/hashicorp/go-hclog"
-	"inet.af/netaddr"
 )
 
 //gonum.org/v1/gonum/stat
@@ -40,7 +40,7 @@ type testT struct {
 // getTests returns the tests table
 //
 // apparently 127.0.0.2 pings now on linux, or actually anything in 127/8
-//https://unix.stackexchange.com/questions/508157/how-come-one-can-successfully-ping-127-0-0-2-on-linux
+// https://unix.stackexchange.com/questions/508157/how-come-one-can-successfully-ping-127-0-0-2-on-linux
 func getTests(debuglevel int) (tests []testT) {
 
 	debugLevels := icmpengine.GetDebugLevels(debuglevel)
@@ -296,7 +296,7 @@ func compareResults(t *testing.T, logger hclog.Logger, i int, test testT, result
 		if median > test.maxMedian {
 			t.Errorf(fmt.Sprintf("test:%d \t IP:%s \t median:%s > test.maxMedian:%s", test.i, results.IP, median.String(), test.maxMedian.String()))
 		} else {
-			logger.Info(fmt.Sprintf("test:%d \t IP:%s \t median:%s < test.maxMedian:%s = good", test.i, results.IP, median.String(), test.maxMedian.String()))
+			logger.Info(fmt.Sprintf("test:%d, %d \t IP:%s \t median:%s < test.maxMedian:%s = good", i, test.i, results.IP, median.String(), test.maxMedian.String()))
 		}
 	}
 
@@ -386,13 +386,13 @@ func TestPinger(t *testing.T) {
 	logger.Info("\n\n======================================")
 
 	debugLevel := testDebugLevel
-	timeoutT := 10 * time.Millisecond
+	timeoutT := 100 * time.Millisecond
 	readDeadlineT := 500 * time.Millisecond
 	debugLevels := icmpengine.GetDebugLevels(debugLevel)
 
 	doneAll := make(chan struct{}, 2)
 	// no splay faster starting for testing
-	ie := icmpengine.NewFullConfig(logger, doneAll, timeoutT, readDeadlineT, false, 2, 2, false, debugLevels, fakeSuccesCst)
+	ie := icmpengine.NewFullConfig(logger, doneAll, readDeadlineT, false, 2, 2, false, debugLevels, fakeSuccesCst)
 	ie.Start()
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
@@ -409,7 +409,8 @@ func TestPinger(t *testing.T) {
 
 		for j, IP := range test.IPs {
 
-			destNetAddr, err := netaddr.ParseIP(IP)
+			// https://pkg.go.dev/net/netip#ParseAddr
+			destNetAddr, err := netip.ParseAddr(IP)
 			if err != nil {
 				if test.expected != false {
 					t.Errorf(fmt.Sprintf("TestPinger test netaddr.ParseIP(IP) failed:%v", err))
@@ -421,7 +422,7 @@ func TestPinger(t *testing.T) {
 			if testDebugLevel > 100 {
 				logger.Info(fmt.Sprintf("TestPinger Pinger, index:%d \t j:%d \t%s", i, j, destNetAddr.String()))
 			}
-			results := ie.Pinger(destNetAddr, icmpengine.Sequence(test.count), test.interval, true, pDone)
+			results := ie.Pinger(destNetAddr, timeoutT, icmpengine.Sequence(test.count), test.interval, true, pDone)
 
 			if testDebugLevel > 10 {
 				logger.Info(fmt.Sprintf("TestPinger:[%s] \tsuccesses:%d \tfailures:%d \tooo:%d \tcount:%d", results.IP.String(), results.Successes, results.Failures, results.OutOfOrder, results.Count))
@@ -449,12 +450,12 @@ func TestPingerWithStatsChannel(t *testing.T) {
 	logger.Info("\n\n######################################################")
 
 	debugLevel := 11
-	timeoutT := 10 * time.Millisecond
+	timeoutT := 100 * time.Millisecond
 	readDeadlineT := 500 * time.Millisecond
 	debugLevels := icmpengine.GetDebugLevels(debugLevel)
 
 	doneAll := make(chan struct{}, 2)
-	ie := icmpengine.NewFullConfig(logger, doneAll, timeoutT, readDeadlineT, false, 2, 2, false, debugLevels, fakeSuccesCst)
+	ie := icmpengine.NewFullConfig(logger, doneAll, readDeadlineT, false, 2, 2, false, debugLevels, fakeSuccesCst)
 
 	pDone := make(chan struct{}, 2)
 
@@ -483,7 +484,8 @@ func TestPingerWithStatsChannel(t *testing.T) {
 
 		for j, IP := range test.IPs {
 
-			destNetAddr, err := netaddr.ParseIP(IP)
+			// https://pkg.go.dev/net/netip#ParseAddr
+			destNetAddr, err := netip.ParseAddr(IP)
 			if err != nil {
 				if test.expected != false {
 					t.Errorf(fmt.Sprintf("TestPingerWithStatsChannel test netaddr.ParseIP(IP) failed:%v", err))
@@ -496,7 +498,7 @@ func TestPingerWithStatsChannel(t *testing.T) {
 				logger.Info(fmt.Sprintf("TestPingerWithStatsChannel Starting go PingerWithStatsChannel, index:%d \tj:%d \t %s", i, j, destNetAddr.String()))
 			}
 			pwg.Add(1)
-			go ie.PingerWithStatsChannel(destNetAddr, icmpengine.Sequence(test.count), test.interval, true, pDone, pwg, sCh)
+			go ie.PingerWithStatsChannel(destNetAddr, timeoutT, icmpengine.Sequence(test.count), test.interval, true, pDone, pwg, sCh)
 		}
 		for j, IP := range test.IPs {
 
@@ -510,7 +512,8 @@ func TestPingerWithStatsChannel(t *testing.T) {
 				logger.Info(fmt.Sprintf("TestPingerWithStatsChannel Received on results := <-sCh, index:%d \tj:%d \t len(test.IPs):%d", i, j, len(test.IPs)))
 			}
 
-			destNetAddr, err := netaddr.ParseIP(IP)
+			// https://pkg.go.dev/net/netip#ParseAddr
+			destNetAddr, err := netip.ParseAddr(IP)
 			if err != nil {
 				if test.expected != false {
 					t.Errorf(fmt.Sprintf("TestPingerWithStatsChannel test netaddr.ParseIP(IP) failed:%v", err))
@@ -555,12 +558,11 @@ func TestRunStopLoop(t *testing.T) {
 	logger := hclog.Default()
 	logger.Info("\n\n******************************************")
 
-	timeoutT := 10 * time.Millisecond
 	readDeadlineT := 500 * time.Millisecond
 	debugLevels := icmpengine.GetDebugLevels(10)
 
 	doneAll := make(chan struct{}, 2)
-	ie := icmpengine.NewFullConfig(logger, doneAll, timeoutT, readDeadlineT, false, 2, 2, false, debugLevels, fakeSuccesCst)
+	ie := icmpengine.NewFullConfig(logger, doneAll, readDeadlineT, false, 2, 2, false, debugLevels, fakeSuccesCst)
 
 	for i := 0; i < 10; i++ {
 
@@ -741,12 +743,12 @@ func TestPingerFakeDrop(t *testing.T) {
 	logger.Info("\n\n(((((((((((((((((((((((((((((((((((((((((((((((((")
 
 	debugLevel := testDebugLevel
-	timeoutT := 10 * time.Millisecond
+	timeoutT := 100 * time.Millisecond
 	readDeadlineT := 500 * time.Millisecond
 	debugLevels := icmpengine.GetDebugLevels(debugLevel)
 
 	doneAll := make(chan struct{}, 2)
-	ie := icmpengine.NewFullConfig(logger, doneAll, timeoutT, readDeadlineT, false, 2, 2, false, debugLevels, fakeSuccesCst)
+	ie := icmpengine.NewFullConfig(logger, doneAll, readDeadlineT, false, 2, 2, false, debugLevels, fakeSuccesCst)
 	ie.Start()
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
@@ -766,7 +768,8 @@ func TestPingerFakeDrop(t *testing.T) {
 
 		for j, IP := range test.IPs {
 
-			destNetAddr, err := netaddr.ParseIP(IP)
+			// https://pkg.go.dev/net/netip#ParseAddr
+			destNetAddr, err := netip.ParseAddr(IP)
 			if err != nil {
 				if test.expected != false {
 					t.Errorf(fmt.Sprintf("TestPinger test netaddr.ParseIP(IP) failed:%v", err))
@@ -778,7 +781,7 @@ func TestPingerFakeDrop(t *testing.T) {
 			if testDebugLevel > 100 {
 				logger.Info(fmt.Sprintf("TestPinger Pinger, index:%d \t j:%d \t%s", i, j, destNetAddr.String()))
 			}
-			results := ie.PingerConfig(destNetAddr, icmpengine.Sequence(test.count), test.interval, true, pDone, test.fakeDrop)
+			results := ie.PingerConfig(destNetAddr, timeoutT, icmpengine.Sequence(test.count), test.interval, true, pDone, test.fakeDrop)
 
 			if testDebugLevel > 10 {
 				logger.Info(fmt.Sprintf("TestPinger:[%s] \tsuccesses:%d \tfailures:%d \tooo:%d \tcount:%d", results.IP.String(), results.Successes, results.Failures, results.OutOfOrder, results.Count))
@@ -807,7 +810,7 @@ func TestPingerFakeSuccess(t *testing.T) {
 
 	fakeSuccess := true
 	debugLevel := testDebugLevel
-	timeoutT := 10 * time.Millisecond
+	timeoutT := 100 * time.Millisecond
 	readDeadlineT := 500 * time.Millisecond
 	debugLevels := icmpengine.GetDebugLevels(debugLevel)
 	start := 1
@@ -816,7 +819,7 @@ func TestPingerFakeSuccess(t *testing.T) {
 	interval := 1 * time.Microsecond
 
 	doneAll := make(chan struct{}, 2)
-	ie := icmpengine.NewFullConfig(logger, doneAll, timeoutT, readDeadlineT, false, 2, 2, false, debugLevels, fakeSuccess)
+	ie := icmpengine.NewFullConfig(logger, doneAll, readDeadlineT, false, 2, 2, false, debugLevels, fakeSuccess)
 	ie.Start()
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
@@ -832,14 +835,15 @@ func TestPingerFakeSuccess(t *testing.T) {
 			for c := start; c < max; c++ {
 				for d := start; d < max; d++ {
 
-					ip := fmt.Sprintf("%d.%d.%d.%d", a, b, c, d)
-					destNetAddr, err := netaddr.ParseIP(ip)
+					IP := fmt.Sprintf("%d.%d.%d.%d", a, b, c, d)
+					// https://pkg.go.dev/net/netip#ParseAddr
+					destNetAddr, err := netip.ParseAddr(IP)
 					if err != nil {
-						t.Errorf(fmt.Sprintf("TestPingerFakeSuccess netaddr.ParseIP(IP):%s failed:%v", ip, err))
+						t.Errorf(fmt.Sprintf("TestPingerFakeSuccess netaddr.ParseIP(IP):%s failed:%v", IP, err))
 					}
 					pwg.Add(1)
-					go ie.PingerWithStatsChannel(destNetAddr, icmpengine.Sequence(count), interval, true, pDone, pwg, sCh)
-					logger.Info(fmt.Sprintf("TestPingerFakeSuccess go ie.PingerWithStatsChannel \t ip:%s \t count:%d \t interval:%s \t i:%d", ip, count, interval, i))
+					go ie.PingerWithStatsChannel(destNetAddr, timeoutT, icmpengine.Sequence(count), interval, true, pDone, pwg, sCh)
+					logger.Info(fmt.Sprintf("TestPingerFakeSuccess go ie.PingerWithStatsChannel \t ip:%s \t count:%d \t interval:%s \t i:%d", IP, count, interval, i))
 
 					i++
 				}

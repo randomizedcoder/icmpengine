@@ -1,3 +1,6 @@
+#
+# icmpengine/Makefile
+#
 all:
 	date -u +"UTC %Y-%m-%d-%H:%M"
 	echo "go test"
@@ -13,7 +16,7 @@ block:
 	go test -failfast -timeout 2m -run TestPinger
 
 channel:
-	go test -failfast -timeout 2m --run TestPingerWithStatsChannel 
+	go test -failfast -timeout 2m --run TestPingerWithStatsChannel
 
 runstop:
 	go test -failfast -timeout 2m --run TestRunStopLoop

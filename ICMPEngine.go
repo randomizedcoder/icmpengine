@@ -16,18 +16,20 @@ package icmpengine
 // Set to run
 // sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 
+// Blog about golang IP types
+// https://djosephsen.github.io/posts/ipnet/
+
 import (
-	"container/list"
 	"fmt"
 	"log"
-	"math/rand"
+	"net/netip"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/google/btree"
 	"github.com/hashicorp/go-hclog"
 	"golang.org/x/net/icmp"
-	"inet.af/netaddr"
 )
 
 const (
@@ -39,7 +41,11 @@ const (
 	Receivers6Cst         = 2
 	OpenSocketsRetriesCst = 2
 
+	NewSoonestChSizeCst = 10
+
 	SplayReceiversCst = true
+
+	btreeDegreeCst = 4
 
 	IEdebugLevel = 111
 )
@@ -87,35 +93,47 @@ type ReceiversT struct {
 }
 
 type ExpirersT struct {
-	WG          sync.WaitGroup
-	DoneCh      chan struct{}
-	DonesChs    map[Protocol]chan struct{}
-	Runnings    map[Protocol]bool
-	Running     bool
-	DebugLevel  int
-	FakeSuccess bool
+	WG           sync.WaitGroup
+	DoneCh       chan struct{}
+	NewSoonestCh chan time.Time
+	DonesChs     map[Protocol]chan struct{}
+	Runnings     map[Protocol]bool
+	Running      bool
+	DebugLevel   int
+	FakeSuccess  bool
 }
 
 type PingersT struct {
-	WG         sync.WaitGroup
-	DoneCh     chan struct{}
-	Pings      map[netaddr.IP]map[Sequence]*list.Element
-	ExpiresDLL *list.List
-	SuccessChs map[netaddr.IP]chan PingSuccess
-	ExpiredChs map[netaddr.IP]chan PingExpired
-	DonesChs   map[netaddr.IP]chan struct{}
-	DebugLevel int
+	WG              sync.WaitGroup
+	DoneCh          chan struct{}
+	Pings           map[netip.Addr]map[Sequence]*Pings
+	Timeouts        map[netip.Addr]time.Duration
+	ExpiresBtree    *btree.BTreeG[*Pings]
+	PingersChannels map[netip.Addr]PingersChannels
+	DebugLevel      int
+}
+
+type PingersChannels struct {
+	SuccessCh chan PingSuccess
+	ExpiredCh chan PingExpired
+	DonesCh   chan struct{}
 }
 
 type Sequence uint16
 type WorkerType rune
 type Protocol uint8
 type Pings struct {
-	NetaddrIP netaddr.IP
-	Seq       Sequence
-	Send      time.Time
-	Expiry    time.Time
-	FakeDrop  bool
+	NetaddrIP  netip.Addr
+	Seq        Sequence
+	SendTime   time.Time
+	ExpiryTime time.Time
+	FakeDrop   bool
+}
+
+// LessThan defines the less than function for Pings
+// To allow using the btree "github.com/google/btree" for the expiry
+func LessThan(a, b *Pings) bool {
+	return a.ExpiryTime.Before(b.ExpiryTime)
 }
 
 // PingSuccess is passed from the Receivers to the Pingers
@@ -155,7 +173,7 @@ func GetDebugLevels(debuglevel int) (debugLevels DebugLevelsT) {
 }
 
 // New creates ICMPEngine with default Receivers Per Protocol
-func New(l hclog.Logger, done chan struct{}, to time.Duration, rd time.Duration, start bool) (icmpEngine *ICMPEngine) {
+func New(l hclog.Logger, done chan struct{}, rd time.Duration, start bool) (icmpEngine *ICMPEngine) {
 
 	var debugLevels = DebugLevelsT{
 		IE: IEdebugLevel,
@@ -165,21 +183,28 @@ func New(l hclog.Logger, done chan struct{}, to time.Duration, rd time.Duration,
 		P:  PdebugLevel,
 	}
 
-	return NewFullConfig(l, done, to, rd, start, Receivers4Cst, Receivers6Cst, SplayReceiversCst, debugLevels, false)
+	return NewFullConfig(l, done, rd, start, Receivers4Cst, Receivers6Cst, SplayReceiversCst, debugLevels, false)
 }
 
 // NewFullConfig creates ICMPEngine with the full set of configuration options
 // Please note could icmpEngine.Start()
 // It is recommended NOT to actually start until you really need ICMPengine listening for incoming packets
 // e.g. You can defer opening the sockets, and starting the receivers until you actually need them
-func NewFullConfig(logger hclog.Logger, done chan struct{}, timeout time.Duration, deadline time.Duration, start bool, receivers4 int, receivers6 int, SplayReceivers bool, debugLevels DebugLevelsT, fakeSuccess bool) (icmpEngine *ICMPEngine) {
+func NewFullConfig(logger hclog.Logger,
+	done chan struct{},
+	deadline time.Duration,
+	start bool,
+	receivers4 int,
+	receivers6 int,
+	SplayReceivers bool,
+	debugLevels DebugLevelsT,
+	fakeSuccess bool) (icmpEngine *ICMPEngine) {
 
-	rand.Seed(time.Now().UnixNano())
+	//rand.Seed(time.Now().UnixNano())
 
 	// Make all the maps here, but create all the channels as part of Start() in StartChannels()
 	icmpEngine = &ICMPEngine{
 		Log:          logger,
-		Timeout:      timeout,
 		ReadDeadline: deadline,
 		Protocols:    []Protocol{Protocol(4), Protocol(6)},
 		PID:          os.Getpid() & 0xffff,
@@ -202,19 +227,19 @@ func NewFullConfig(logger hclog.Logger, done chan struct{}, timeout time.Duratio
 			DebugLevel: debugLevels.R,
 		},
 		Expirers: ExpirersT{
-			DoneCh:      make(chan struct{}, 2),
-			DonesChs:    make(map[Protocol]chan struct{}),
-			Runnings:    make(map[Protocol]bool),
-			DebugLevel:  debugLevels.E,
-			FakeSuccess: fakeSuccess,
+			DoneCh:       make(chan struct{}, 2),
+			NewSoonestCh: make(chan time.Time, NewSoonestChSizeCst),
+			DonesChs:     make(map[Protocol]chan struct{}),
+			Runnings:     make(map[Protocol]bool),
+			DebugLevel:   debugLevels.E,
+			FakeSuccess:  fakeSuccess,
 		},
 		Pingers: PingersT{
-			Pings:      make(map[netaddr.IP]map[Sequence]*list.Element),
-			ExpiresDLL: list.New(),
-			SuccessChs: make(map[netaddr.IP]chan PingSuccess),
-			ExpiredChs: make(map[netaddr.IP]chan PingExpired),
-			DonesChs:   make(map[netaddr.IP]chan struct{}),
-			DebugLevel: debugLevels.P,
+			Pings:           make(map[netip.Addr]map[Sequence]*Pings),
+			Timeouts:        make(map[netip.Addr]time.Duration),
+			ExpiresBtree:    btree.NewG(btreeDegreeCst, LessThan),
+			PingersChannels: make(map[netip.Addr]PingersChannels),
+			DebugLevel:      debugLevels.P,
 		},
 	}
 
@@ -239,7 +264,7 @@ func NewFullConfig(logger hclog.Logger, done chan struct{}, timeout time.Duratio
 func (ie *ICMPEngine) StartReceiversSplay() {
 
 	if ie.DebugLevel > 10 {
-		ie.Log.Info(fmt.Sprintf("StartReceiversSplay"))
+		ie.Log.Info("StartReceiversSplay")
 	}
 
 	ie.RLock()

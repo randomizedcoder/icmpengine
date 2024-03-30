@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"inet.af/netaddr"
+	"net/netip"
 )
 
 const (
@@ -26,7 +26,7 @@ const (
 	RdebugLevel = 111
 )
 
-// sync.Pool in theory reduces garbage collection
+// sync.Pool reduces garbage collection
 var bufPool = sync.Pool{
 	New: func() interface{} {
 		b := make([]byte, ReceiveBufferMax)
@@ -70,7 +70,6 @@ func tiarCalculator(tiar int, low int, medium int, high int, mLow float64, mMedi
 // this is mostly to allow checking for the done signal, and therefore allow closing down the Receivers
 // gracefully.
 // There is [Timeouts In A Row] code that increases these timeouts gradually, to decrease the ReadFrom thrashing
-//
 func (ie *ICMPEngine) Receiver(proto Protocol, index int, allDone <-chan struct{}, done <-chan struct{}) {
 
 	if ie.Sockets.DebugLevel > 100 {
@@ -86,7 +85,7 @@ func (ie *ICMPEngine) Receiver(proto Protocol, index int, allDone <-chan struct{
 	// Don't start the receivers if we're faking success
 	if fakeSuccess {
 		// return
-		log.Fatal(fmt.Sprintf("Receiver fakeSuccess:%t nothing should try to start the receivers", fakeSuccess))
+		log.Fatalf("Receiver fakeSuccess:%t nothing should try to start the receivers", fakeSuccess)
 	}
 
 	if ie.Receivers.DebugLevel > 100 {
@@ -101,7 +100,7 @@ func (ie *ICMPEngine) Receiver(proto Protocol, index int, allDone <-chan struct{
 		buffer := bufPool.Get().(*[]byte)
 
 		// We increase the timeouts when there have been a lot of timeouts in a row, to reduce thrashing on the syscall
-		var readDealLine time.Duration = time.Duration(float64(ie.ReadDeadline) * timeoutsInARowCalculator(timeoutsInARow))
+		readDealLine := time.Duration(float64(ie.ReadDeadline) * timeoutsInARowCalculator(timeoutsInARow))
 
 		(ie.Sockets.Sockets[proto]).SetReadDeadline(time.Now().Add(readDealLine))
 		if ie.Receivers.DebugLevel > 100 {
@@ -122,7 +121,7 @@ func (ie *ICMPEngine) Receiver(proto Protocol, index int, allDone <-chan struct{
 				if ie.Receivers.DebugLevel > 100 {
 					ie.Log.Info(fmt.Sprintf("Receiver\t proto:%d \t index:%d, ReadFrom actual error", proto, index))
 				}
-				log.Fatal(fmt.Sprintf("Receiver\t proto:%d \t index:%d \t err:%v", proto, index, err))
+				log.Fatalf("Receiver\t proto:%d \t index:%d \t err:%v", proto, index, err)
 			}
 		} else {
 			timeoutsInARow = 0
@@ -146,11 +145,11 @@ func (ie *ICMPEngine) Receiver(proto Protocol, index int, allDone <-chan struct{
 						ie.Log.Info(fmt.Sprintf("Receiver \t proto:%d \t index:%d, SplitHostPort error::%s", proto, index, err))
 					}
 				}
-				ip := netaddr.MustParseIP(host)
+				ip := netip.MustParseAddr(host)
 				s := Sequence(echoReply.Seq)
 
 				ie.RLock() // <------------------ READ LOCK!!
-				el, exists := ie.Pingers.Pings[ip][s]
+				ps, exists := ie.Pingers.Pings[ip][s]
 				ie.RUnlock() // <---------------- READ UNLOCK!!
 
 				if !exists {
@@ -158,24 +157,26 @@ func (ie *ICMPEngine) Receiver(proto Protocol, index int, allDone <-chan struct{
 						ie.Log.Info(fmt.Sprintf("Receiver [%s] \t proto:%d \t index:%d, Unknown ICMP reply message.  Where on earth did this come from??!!", ip.String(), proto, index))
 					}
 				} else {
-					rttDuration := receiveTime.Sub(el.Value.(Pings).Send)
+					rttDuration := receiveTime.Sub(ps.SendTime)
 					if ie.Receivers.DebugLevel > 100 {
 						ie.Log.Info(fmt.Sprintf("Receiver [%s] \t Exists \t proto:%d \t index:%d, m.Seq:%d\t rttDuration:%s", ip.String(), proto, index, echoReply.Seq, rttDuration.String()))
 					}
 
-					ps := &PingSuccess{
+					pSuccess := &PingSuccess{
 						Seq:      s,
-						Send:     el.Value.(Pings).Send,
+						Send:     ps.SendTime,
 						Received: receiveTime,
 						RTT:      rttDuration,
 					}
 					ie.Lock() // <--------------- LOCK!!
-					ie.Pingers.SuccessChs[ip] <- *ps
+					successCh := ie.Pingers.PingersChannels[ip].SuccessCh
 					delete(ie.Pingers.Pings[ip], s)
-					ie.Pingers.ExpiresDLL.Remove(el)
+					//ie.Pingers.ExpiresDLL.Remove(el)
+					ie.Pingers.ExpiresBtree.Delete(ps)
 					ie.Unlock() // <------------- UNLOCK!!
+					successCh <- *pSuccess
 					if ie.Receivers.DebugLevel > 100 {
-						ie.Log.Info(fmt.Sprintf("Receiver [%s] \t proto:%d \t index:%d, ie.SuccessChs[ip] <- *ps, delete, remove from  ExpiresDLL", ip.String(), proto, index))
+						ie.Log.Info(fmt.Sprintf("Receiver [%s] \t proto:%d \t index:%d, ie.SuccessChs[ip] <- *pSuccess, delete, remove from  ExpiresBtree", ip.String(), proto, index))
 					}
 				}
 			}

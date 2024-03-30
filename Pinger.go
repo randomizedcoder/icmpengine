@@ -3,14 +3,13 @@ package icmpengine
 import (
 	"fmt"
 	"math/rand"
+	"net/netip"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/go-hclog"
-	"inet.af/netaddr"
 
-	"container/list"
 	"log"
 	"net"
 	"syscall"
@@ -20,14 +19,29 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
+// 	_ "unsafe"
+// unsafe for RastRand
+
+// https://pkg.go.dev/go4.org/netipx
+
 const (
+	ZeroDrop = 0
+
 	PingerFractionModulo = 10
 
 	PdebugLevel = 111
 )
 
+// sync.Pool reduces garbage collection
+var icmpBufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 0, ReceiveBufferMax)
+		return &b
+	},
+}
+
 type PingerResults struct {
-	IP             netaddr.IP
+	IP             netip.Addr
 	Successes      int
 	Failures       int
 	OutOfOrder     int
@@ -41,15 +55,24 @@ type PingerResults struct {
 	PingerDuration time.Duration
 }
 
-// PingerWithStatsChannel is the Pinger which sends stats on the output channel, rather than returning the values
-func (ie *ICMPEngine) PingerWithStatsChannel(IP netaddr.IP, packets Sequence, interval time.Duration, sortRTTs bool, DoneCh chan struct{}, wg *sync.WaitGroup, pingerResultsCh chan<- PingerResults) {
+// PingerWithStatsChannel is the Pinger which sends stats on the output channel,
+// rather than returning the values
+func (ie *ICMPEngine) PingerWithStatsChannel(
+	IP netip.Addr,
+	timeout time.Duration,
+	packets Sequence,
+	interval time.Duration,
+	sortRTTs bool,
+	DoneCh chan struct{},
+	wg *sync.WaitGroup,
+	pingerResultsCh chan<- PingerResults) {
 
 	defer wg.Done()
 	if ie.Pingers.DebugLevel > 100 {
 		ie.Log.Info(fmt.Sprintf("PingerWithStatsChannel started:\t%s", IP.String()))
 	}
 
-	results := ie.Pinger(IP, packets, interval, sortRTTs, DoneCh)
+	results := ie.Pinger(IP, timeout, packets, interval, sortRTTs, DoneCh)
 
 	if ie.Pingers.DebugLevel > 100 {
 		ie.Log.Info(fmt.Sprintf("PingerWithStatsChannel recieved results, sending on channel:\t%s", IP.String()))
@@ -64,8 +87,16 @@ func (ie *ICMPEngine) PingerWithStatsChannel(IP netaddr.IP, packets Sequence, in
 // Pinger calls PingerConfig with:
 // - zero (0) probability of drop,
 // - no fake success
-func (ie *ICMPEngine) Pinger(IP netaddr.IP, packets Sequence, interval time.Duration, sortRTTs bool, DoneCh chan struct{}) (results PingerResults) {
-	results = ie.PingerConfig(IP, packets, interval, sortRTTs, DoneCh, 0)
+func (ie *ICMPEngine) Pinger(
+	IP netip.Addr,
+	timeout time.Duration,
+	packets Sequence,
+	interval time.Duration,
+	sortRTTs bool,
+	DoneCh chan struct{}) (results PingerResults) {
+
+	results = ie.PingerConfig(IP, timeout, packets, interval, sortRTTs, DoneCh, ZeroDrop)
+
 	return
 }
 
@@ -83,11 +114,16 @@ func (ie *ICMPEngine) Pinger(IP netaddr.IP, packets Sequence, interval time.Dura
 // Welford's math stolen from https://pkg.go.dev/github.com/eclesh/welford
 // Welford's one-pass algorithm for computing the mean and variance
 // of a set of numbers. For more information see Knuth (TAOCP Vol 2, 3rd ed, pg 232)
-func (ie *ICMPEngine) PingerConfig(IP netaddr.IP, packets Sequence, interval time.Duration, sortRTTs bool, DoneCh chan struct{}, dropProb float64) (results PingerResults) {
+func (ie *ICMPEngine) PingerConfig(
+	IP netip.Addr,
+	timeout time.Duration,
+	packets Sequence,
+	interval time.Duration,
+	sortRTTs bool,
+	DoneCh chan struct{},
+	dropProb float64) (results PingerResults) {
 
-	if ie.Pingers.DebugLevel > 100 {
-		ie.Log.Info(fmt.Sprintf("Pinger started:\t[%s]", IP.String()))
-	}
+	ie.debugLog(ie.Pingers.DebugLevel > 10, fmt.Sprintf("Pinger started:\t[%s]", IP.String()))
 
 	var proto Protocol
 	if IP.Is4() {
@@ -98,34 +134,31 @@ func (ie *ICMPEngine) PingerConfig(IP netaddr.IP, packets Sequence, interval tim
 		}
 	}
 
-	if ie.Pingers.DebugLevel > 100 {
-		ie.Log.Info(fmt.Sprintf("Pinger [%s] Trying to acquire lock at start", IP.String()))
-	}
+	ie.debugLog(ie.Pingers.DebugLevel > 10, fmt.Sprintf("Pinger [%s] Trying to acquire lock at start", IP.String()))
 
-	successCh := make(chan PingSuccess, int(packets))
-	expiredCh := make(chan PingExpired, int(packets))
+	pingsChannels := &PingersChannels{
+		SuccessCh: make(chan PingSuccess, int(packets)),
+		ExpiredCh: make(chan PingExpired, int(packets)),
+		DonesCh:   DoneCh,
+	}
 
 	ie.Lock()
 	fakeSuccess := ie.Expirers.FakeSuccess
 	socket := ie.Sockets.Sockets[proto]
 	id := ie.PID
-	ie.Pingers.SuccessChs[IP] = successCh
-	ie.Pingers.ExpiredChs[IP] = expiredCh
-	ie.Pingers.DonesChs[IP] = DoneCh
+	ie.Pingers.Timeouts[IP] = timeout
+	ie.Pingers.PingersChannels[IP] = *pingsChannels
 	pingersAllDone := ie.Pingers.DoneCh
 	ie.Unlock()
 
-	if ie.Pingers.DebugLevel > 100 {
-		ie.Log.Info(fmt.Sprintf("Pinger [%s] Unlocked", IP.String()))
-	}
+	ie.debugLog(ie.Pingers.DebugLevel > 10, fmt.Sprintf("Pinger [%s] Unlocked", IP.String()))
 
 	results.IP = IP
 	results.RTTs = make([]time.Duration, int(packets))
 
 	startTime := time.Now()
 
-	var expirerStarted int
-	var expirerRunning int
+	var expirerStarted, expirerRunning int
 
 	// i is uint16, because ICMP sequence number is only 16 bits
 	for i, keepLooping := Sequence(0), true; i < packets && keepLooping; i++ {
@@ -135,61 +168,76 @@ func (ie *ICMPEngine) PingerConfig(IP netaddr.IP, packets Sequence, interval tim
 
 		if ie.Pingers.DebugLevel > 100 {
 			ie.Log.Info("-------------------------------------------------")
-			ie.Log.Info(fmt.Sprintf("Pinger [%s] \t i:%d \t packets:%d \t proto:%d \t keepLooping:%t \t fakeDrop:%t \t fakeSucces:%t", IP.String(), i, int(packets), proto, keepLooping, fakeDrop, fakeSuccess))
+			ie.Log.Info(
+				fmt.Sprintf("Pinger [%s] \t i:%d \t packets:%d \t proto:%d \t keepLooping:%t \t fakeDrop:%t \t fakeSucces:%t",
+					IP.String(), i, int(packets), proto, keepLooping, fakeDrop, fakeSuccess))
 		}
 
-		var addr *net.UDPAddr
-		var wb []byte
-		var merr error
+		var (
+			addr *net.UDPAddr
+			merr error
+		)
+		wb := icmpBufPool.Get().(*[]byte)
 		if !fakeSuccess || fakeDrop {
 			msg := buildICMPMessage(id, i, proto)
-			addr = &net.UDPAddr{IP: IP.IPAddr().IP, Port: 0}
-			wb, merr = msg.Marshal(nil)
+
+			*wb, merr = msg.Marshal(nil)
 			if merr != nil {
-				log.Fatal(fmt.Sprintf("Pinger [%s] msg.Marshal(nil):%v", IP.String(), merr))
+				log.Fatalf("Pinger [%s] msg.Marshal(nil):%v", IP.String(), merr)
 			}
+			ICMPMessagePool.Put(msg)
+
+			addr = &net.UDPAddr{IP: IP.AsSlice(), Port: 0}
 		}
 
-		if ie.Pingers.DebugLevel > 100 {
-			ie.Log.Info(fmt.Sprintf("Pinger [%s] Trying to acquire lock, to PushBack(*ps)", IP.String()))
-		}
+		ie.debugLog(ie.Pingers.DebugLevel > 100,
+			fmt.Sprintf("Pinger [%s] Trying to acquire lock, to PushBack(*ps)", IP.String()))
+
 		ie.Lock() // <---------------------- LOCK!!
+
+		ie.debugLog(ie.Pingers.DebugLevel > 100,
+			fmt.Sprintf("Pinger [%s] Acquired lock, to PushBack(*ps)", IP.String()))
 
 		// time.Now() AFTER we have acquired the lock, because it could take time to acquire
 		send := time.Now()
-		expiry := send.Add(ie.Timeout)
 		ps := &Pings{
-			NetaddrIP: IP,
-			Seq:       i,
-			Send:      send,
-			Expiry:    expiry,
-			FakeDrop:  fakeDrop,
+			NetaddrIP:  IP,
+			Seq:        i,
+			SendTime:   send,
+			ExpiryTime: send.Add(timeout),
+			FakeDrop:   fakeDrop,
 		}
 
 		if i == Sequence(0) {
 			_, exists := ie.Pingers.Pings[IP]
 			if !exists {
-				ie.Pingers.Pings[IP] = make(map[Sequence]*list.Element)
+				ie.Pingers.Pings[IP] = make(map[Sequence]*Pings)
 			}
 		}
-		ie.Pingers.Pings[IP][i] = ie.Pingers.ExpiresDLL.PushBack(*ps)
-
+		ie.Pingers.Pings[IP][i] = ps
+		ie.Pingers.ExpiresBtree.ReplaceOrInsert(ps)
 		if ie.CheckExpirerIsRunning() {
 			expirerStarted++
 		} else {
 			expirerRunning++
 		}
-		// Please note we must unlock AFTER we ie.CheckExpirerIsRunning()
-
+		// Please note we must unlock AFTER we check ie.CheckExpirerIsRunning()
 		ie.Unlock() // <-------------------- UNLOCK!!
+		ie.debugLog(ie.Pingers.DebugLevel > 100, fmt.Sprintf("Pinger [%s] ie.Unlock()", IP.String()))
 
-		if ie.Pingers.DebugLevel > 100 {
-			ie.Log.Info(fmt.Sprintf("Pinger [%s] ie.Unlock()", IP.String()))
+		soonestPing, ok := ie.Pingers.ExpiresBtree.Min()
+		if !ok {
+			ie.debugLog(ie.Expirers.DebugLevel > 100, fmt.Sprintf("Pinger [%s] no minimum? returning", IP.String()))
+			return
+		}
+		if soonestPing.ExpiryTime == ps.ExpiryTime {
+			ie.debugLog(ie.Expirers.DebugLevel > 100, fmt.Sprintf("Pinger [%s] new soonest Ping, ie.Expirers.NewSoonestCh <- ps.ExpiryTime", IP.String()))
+			ie.Expirers.NewSoonestCh <- ps.ExpiryTime
+			ie.debugLog(ie.Expirers.DebugLevel > 100, fmt.Sprintf("Pinger [%s] new soonest Ping, sent", IP.String()))
 		}
 
-		if ie.Pingers.DebugLevel > 100 {
-			ie.Log.Info(fmt.Sprintf("Pinger [%s] \t expirerStarted:%d \t expirerRunning:%d ", IP.String(), expirerStarted, expirerRunning))
-		}
+		ie.debugLog(ie.Pingers.DebugLevel > 100,
+			fmt.Sprintf("Pinger [%s] \t expirerStarted:%d \t expirerRunning:%d ", IP.String(), expirerStarted, expirerRunning))
 
 		if fakeSuccess {
 			if ie.Pingers.DebugLevel > 100 {
@@ -197,31 +245,26 @@ func (ie *ICMPEngine) PingerConfig(IP netaddr.IP, packets Sequence, interval tim
 			}
 		} else {
 			if fakeDrop {
-				if ie.Pingers.DebugLevel > 100 {
-					ie.Log.Info(fmt.Sprintf("Pinger [%s] \t fakeDrop, so we just don't send it, and expirer will think it's dropped", IP.String()))
-				}
+				ie.debugLog(ie.Pingers.DebugLevel > 100,
+					fmt.Sprintf("Pinger [%s] \t fakeDrop, so we just don't send it, and expirer will think it's dropped", IP.String()))
 			} else {
-				if ie.Pingers.DebugLevel > 100 {
-					ie.Log.Info(fmt.Sprintf("Pinger [%s] \t WriteTo len(wb):%d", IP.String(), len(wb)))
-				}
+				ie.debugLog(ie.Pingers.DebugLevel > 100, fmt.Sprintf("Pinger [%s] \t WriteTo len(wb):%d", IP.String(), len(*wb)))
 
 				WriteTo(wb, addr, socket, ie.Pingers.DebugLevel, ie.Log)
+				icmpBufPool.Put(wb)
 			}
 		}
 
-		if ie.Pingers.DebugLevel > 100 {
-			ie.Log.Info(fmt.Sprintf("Pinger [%s] \t select", IP.String()))
-		}
+		ie.debugLog(ie.Pingers.DebugLevel > 100, fmt.Sprintf("Pinger [%s] \t select", IP.String()))
+
 		select {
-		case ps := <-successCh:
-			if ie.Pingers.DebugLevel > 100 {
-				ie.Log.Info(fmt.Sprintf("Pinger [%s] <-ie.SuccessChs[IP]\ti:%d", IP.String(), i))
-			}
+		case ps := <-ie.Pingers.PingersChannels[IP].SuccessCh:
+			ie.debugLog(ie.Pingers.DebugLevel > 100, fmt.Sprintf("Pinger [%s] <-ie.SuccessChs[IP]\ti:%d", IP.String(), i))
+
 			val := ps.RTT
 
-			if ie.Pingers.DebugLevel > 100 {
-				ie.Log.Info(fmt.Sprintf("Pinger [%s] results.RTTs:%s", IP.String(), results.RTTs))
-			}
+			ie.debugLog(ie.Pingers.DebugLevel > 100, fmt.Sprintf("Pinger [%s] results.RTTs:%s", IP.String(), results.RTTs))
+
 			results.RTTs[i] = val
 			results.Sum += val
 			//{--------------------
@@ -243,9 +286,9 @@ func (ie *ICMPEngine) PingerConfig(IP netaddr.IP, packets Sequence, interval tim
 			//s.s += (val - old_mean) * (val - s.mean)
 			// I'm doing something incorrectly with the variance conversions
 			results.Variance += time.Duration(((val.Seconds() - oldMean.Seconds()) * (val.Seconds() - results.Mean.Seconds()))) * time.Second
-			if ie.Pingers.DebugLevel > 1000 {
-				ie.Log.Info(fmt.Sprintf("Pinger [%s] \ti:%d \tval:%s \tMean:%s \toldMean:%s", IP.String(), i, val.String(), results.Mean.String(), oldMean.String()))
-			}
+			ie.debugLog(ie.Pingers.DebugLevel > 1000,
+				fmt.Sprintf("Pinger [%s] \ti:%d \tval:%s \tMean:%s \toldMean:%s", IP.String(), i, val.String(), results.Mean.String(), oldMean.String()))
+
 			// Welford's ends
 			//}--------------------
 
@@ -256,64 +299,49 @@ func (ie *ICMPEngine) PingerConfig(IP netaddr.IP, packets Sequence, interval tim
 			}
 			if ps.Seq != Sequence(i) {
 				results.OutOfOrder++
-				if ie.Pingers.DebugLevel > 10 {
-					ie.Log.Info(fmt.Sprintf("Pinger [%s] \ti:%d \t Seq:%d \t Out of order:%d", IP.String(), i, ps.Seq, results.OutOfOrder))
-				}
+				ie.debugLog(ie.Pingers.DebugLevel > 10,
+					fmt.Sprintf("Pinger [%s] \ti:%d \t Seq:%d \t Out of order:%d", IP.String(), i, ps.Seq, results.OutOfOrder))
 			}
-		case pe := <-expiredCh:
-			if ie.Pingers.DebugLevel > 100 {
-				ie.Log.Info(fmt.Sprintf("Pinger [%s] <-ie.ExpiredChs[IP]\ti:%d", IP.String(), i))
-			}
+		case pe := <-ie.Pingers.PingersChannels[IP].ExpiredCh:
+			ie.debugLog(ie.Pingers.DebugLevel > 100, fmt.Sprintf("Pinger [%s] <-ie.ExpiredChs[IP]\ti:%d", IP.String(), i))
 			results.Failures++
-			if ie.Pingers.DebugLevel > 10 {
-				ie.Log.Info(fmt.Sprintf("Pinger [%s] \t i:%d \t Seq:%d \t Expired/Timed-out after:%s", IP.String(), i, pe.Seq, ie.Timeout.String()))
-			}
+			ie.debugLog(ie.Pingers.DebugLevel > 10,
+				fmt.Sprintf("Pinger [%s] \t i:%d \t Seq:%d \t Expired/Timed-out after:%s", IP.String(), i, pe.Seq, timeout.String()))
 		case <-DoneCh:
 			keepLooping = false
-			if ie.Pingers.DebugLevel > 10 {
-				ie.Log.Info(fmt.Sprintf("Pinger [%s] i:%d\t <-ie.Pingers.DonesChs[IP]", IP.String(), i))
-			}
+			ie.debugLog(ie.Pingers.DebugLevel > 10, fmt.Sprintf("Pinger [%s] i:%d\t <-ie.Pingers.DonesChs[IP]", IP.String(), i))
 		case <-pingersAllDone:
 			keepLooping = false
-			if ie.Pingers.DebugLevel > 10 {
-				ie.Log.Info(fmt.Sprintf("Pinger [%s] i:%d\t <-ie.Pingers.DoneCh", IP.String(), i))
-			}
+			ie.debugLog(ie.Pingers.DebugLevel > 10, fmt.Sprintf("Pinger [%s] i:%d\t <-ie.Pingers.DoneCh", IP.String(), i))
 			// NO DEFAULT - This is a BLOCKING select
 			//default:
 		}
 		if i >= packets {
 			keepLooping = false
-			if ie.Pingers.DebugLevel > 100 {
-				ie.Log.Info(fmt.Sprintf("Pinger [%s] \t i:%d \t i >= packets keepLooping:%t", IP.String(), i, keepLooping))
-			}
+			ie.debugLog(ie.Pingers.DebugLevel > 100,
+				fmt.Sprintf("Pinger [%s] \t i:%d \t i >= packets keepLooping:%t", IP.String(), i, keepLooping))
+
 		} else {
-			if ie.Pingers.DebugLevel > 100 {
-				ie.Log.Info(fmt.Sprintf("Pinger [%s] \t i:%d \t i < packets keepLooping:%t", IP.String(), i, keepLooping))
-			}
+			ie.debugLog(ie.Pingers.DebugLevel > 10,
+				fmt.Sprintf("Pinger [%s] \t i:%d \t i < packets keepLooping:%t", IP.String(), i, keepLooping))
 		}
 
 		if keepLooping {
 			loopEndTime := time.Now()
 			loopDuration := loopEndTime.Sub(loopStartTime)
 			sleepDuration := interval - loopDuration
-			if ie.Pingers.DebugLevel > 100 {
-				ie.Log.Info(fmt.Sprintf("Pinger [%s] \t i:%d \t  \t loopDuration:%s\t sleepDuration:%s", IP.String(), i, loopDuration.String(), sleepDuration.String()))
-			}
+			ie.debugLog(ie.Pingers.DebugLevel > 10,
+				fmt.Sprintf("Pinger [%s] \t i:%d \t  \t loopDuration:%s\t sleepDuration:%s", IP.String(), i, loopDuration.String(), sleepDuration.String()))
+
 			select {
 			case <-time.After(sleepDuration):
-				if ie.Pingers.DebugLevel > 100 {
-					ie.Log.Info(fmt.Sprintf("Pinger [%s] \t i:%d \t wakes up", IP.String(), i))
-				}
+				ie.debugLog(ie.Pingers.DebugLevel > 100, fmt.Sprintf("Pinger [%s] \t i:%d \t wakes up", IP.String(), i))
 			case <-DoneCh:
 				keepLooping = false
-				if ie.Pingers.DebugLevel > 10 {
-					ie.Log.Info(fmt.Sprintf("Pinger [%s] \t i:%d \t <-ie.Pingers.DonesChs[IP]", IP.String(), i))
-				}
+				ie.debugLog(ie.Pingers.DebugLevel > 10, fmt.Sprintf("Pinger [%s] \t i:%d \t <-ie.Pingers.DonesChs[IP]", IP.String(), i))
 			case <-pingersAllDone:
 				keepLooping = false
-				if ie.Pingers.DebugLevel > 10 {
-					ie.Log.Info(fmt.Sprintf("Pinger [%s] \t i:%d \t <-ie.Pingers.DoneCh", IP.String(), i))
-				}
+				ie.debugLog(ie.Pingers.DebugLevel > 10, fmt.Sprintf("Pinger [%s] \t i:%d \t <-ie.Pingers.DoneCh", IP.String(), i))
 				// NO DEFAULT - This is a BLOCKING select
 				//default:
 			}
@@ -345,16 +373,14 @@ func (ie *ICMPEngine) PingerConfig(IP netaddr.IP, packets Sequence, interval tim
 		sort.Slice(results.RTTs, func(i, j int) bool { return results.RTTs[i] < results.RTTs[j] })
 	}
 
-	if EdebugLevel > 10 {
-		ie.Log.Info(fmt.Sprintf("Pinger [%s] \t Acquiring ie.Lock() to delete", IP.String()))
-	}
+	ie.debugLog(EdebugLevel > 10, fmt.Sprintf("Pinger [%s] \t Acquiring ie.Lock() to delete", IP.String()))
+
 	ie.Lock()
 	delete(ie.Pingers.Pings, IP)
-	delete(ie.Pingers.SuccessChs, IP)
-	delete(ie.Pingers.ExpiredChs, IP)
-	delete(ie.Pingers.DonesChs, IP)
+	delete(ie.Pingers.PingersChannels, IP)
 	ie.Unlock()
-	ie.Log.Info(fmt.Sprintf("Pinger [%s] Map keys deleted, and lock released, returning", IP.String()))
+
+	ie.debugLog(EdebugLevel > 10, fmt.Sprintf("Pinger [%s] Map keys deleted, and lock released, returning", IP.String()))
 
 	return results
 }
@@ -362,22 +388,21 @@ func (ie *ICMPEngine) PingerConfig(IP netaddr.IP, packets Sequence, interval tim
 // FakeDrop is a simple function to return true based on a probability
 // Looking at this issue, I'm not sure if this is perfect, but should be ok
 // https://github.com/golang/go/issues/12290
+// Should probably convert this to use FastRand TODO
 func FakeDrop(dropProb float64) (drop bool) {
-
-	if dropProb > 0 {
-		if rand.Float64() >= (1 - dropProb) {
-			drop = true
-		}
+	if dropProb == 0 {
+		return
+	}
+	if rand.Float64() >= (1 - dropProb) {
+		drop = true
 	}
 	return
 }
 
 // WriteTo performs the socket write, and does error handling
-func WriteTo(wb []byte, addr *net.UDPAddr, socket *icmp.PacketConn, debugLevel int, logger hclog.Logger) {
+func WriteTo(wb *[]byte, addr *net.UDPAddr, socket *icmp.PacketConn, debugLevel int, logger hclog.Logger) {
 
-	var bw int
-	var we error
-	bw, we = (socket).WriteTo(wb, addr) // ----------------------------<< WriteTo ( Sends packet to the kernel )
+	bw, we := (socket).WriteTo(*wb, addr) // ----------------------------<< WriteTo ( Sends packet to the kernel )
 	if we != nil {
 		if debugLevel > 100 {
 			logger.Error(fmt.Sprintf("Pinger [%s] \t Writer bytes error:%s", addr.IP.String(), we))
@@ -388,12 +413,22 @@ func WriteTo(wb []byte, addr *net.UDPAddr, socket *icmp.PacketConn, debugLevel i
 			}
 		}
 	}
-	if bw != len(wb) {
+	if bw != len(*wb) {
 		log.Fatal("Pinger WriteTo error. Bytes sent does not match packet length.")
 	}
 	if debugLevel > 100 {
-		logger.Info(fmt.Sprintf("Pinger [%s] WriteTo bytes written:%d \t len(wb):%d \t to:[%s]", addr.IP.String(), bw, len(wb), (socket).LocalAddr()))
+		logger.Info(fmt.Sprintf("Pinger [%s] WriteTo bytes written:%d \t len(wb):%d \t to:[%s]",
+			addr.IP.String(), bw, len(*wb), (socket).LocalAddr()))
 	}
+}
+
+// ICMPMessagePool reduces garbage collection
+var ICMPMessagePool = sync.Pool{
+	New: func() interface{} {
+		return &icmp.Message{
+			Code: 0,
+		}
+	},
 }
 
 // buildICMPMessage builds the icmp.Echo message body and the icmp.Message
@@ -404,18 +439,14 @@ func buildICMPMessage(id int, seq Sequence, proto Protocol) (msg *icmp.Message) 
 		Seq: int(seq),
 	}
 
-	if proto == Protocol(4) {
-		msg = &icmp.Message{
-			Type: ipv4.ICMPTypeEcho,
-			Code: 0,
-			Body: body,
-		}
-	} else {
-		msg = &icmp.Message{
-			Type: ipv6.ICMPTypeEchoRequest,
-			Code: 0,
-			Body: body,
-		}
+	msg = ICMPMessagePool.Get().(*icmp.Message)
+	msg.Body = body
+
+	switch proto {
+	case Protocol(4):
+		msg.Type = ipv4.ICMPTypeEcho
+	case Protocol(6):
+		msg.Type = ipv6.ICMPTypeEchoRequest
 	}
 
 	return msg

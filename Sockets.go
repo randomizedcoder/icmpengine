@@ -24,9 +24,8 @@ const (
 // open the sockets, it will log fatal
 func (ie *ICMPEngine) OpenSockets() {
 
-	if ie.Sockets.DebugLevel > 10 {
-		ie.Log.Info("OpenSockets() acquiring ie.RLock()")
-	}
+	ie.debugLog(ie.Sockets.DebugLevel > 100, "OpenSockets() acquiring ie.RLock()")
+
 	ie.RLock()
 	fakeSuccess := ie.Expirers.FakeSuccess
 	open := ie.Sockets.Open
@@ -46,14 +45,12 @@ func (ie *ICMPEngine) OpenSockets() {
 
 	ie.Lock()
 	defer ie.Unlock()
-	if ie.Sockets.DebugLevel > 10 {
-		ie.Log.Info("OpenSockets ie.Lock() acquired")
-	}
+	ie.debugLog(ie.Sockets.DebugLevel > 10, "OpenSockets ie.Lock() acquired")
 
 	if ie.Sockets.Open {
-		if ie.Sockets.DebugLevel > 10 {
-			ie.Log.Info("OpenSockets ie.Sockets.Open sockets are already open wih ie.Lock()")
-		}
+		ie.debugLog(ie.Sockets.DebugLevel > 100,
+			"OpenSockets ie.Sockets.Open sockets are already open wih ie.Lock()")
+
 		return
 	}
 
@@ -61,12 +58,11 @@ func (ie *ICMPEngine) OpenSockets() {
 	for _, p := range ie.Protocols {
 		for retries := 0; retries < OpenSocketsRetriesCst && !ie.Sockets.Opens[p]; retries++ {
 			if ie.Sockets.Opens[p] {
-				if ie.Sockets.DebugLevel > 10 {
-					ie.Log.Info(fmt.Sprintf("OpenSockets ie.Sockets.Opens[%d] sockets are already open. ??!", p))
+				ie.debugLog(ie.Sockets.DebugLevel > 10,
+					fmt.Sprintf("OpenSockets ie.Sockets.Opens[%d] sockets are already open. ??!", p))
 
-				}
 				//return
-				log.Fatal(fmt.Sprintf("OpenSockets ie.Sockets.Opens[%d] sockets are already open. ??!", p))
+				log.Fatalf("OpenSockets ie.Sockets.Opens[%d] sockets are already open. ??!", p)
 			}
 			var sockErr error
 			ie.Sockets.Sockets[p], sockErr = icmp.ListenPacket(ie.Sockets.Networks[p], ie.Sockets.Addresses[p])
@@ -80,36 +76,31 @@ func (ie *ICMPEngine) OpenSockets() {
 			}
 			ie.Sockets.Opens[p] = true
 			sockets++
-			if ie.Sockets.DebugLevel > 10 {
-				ie.Log.Info(fmt.Sprintf("OpenSockets() Socket Open \t protocol:%d \t retries:%d", p, retries))
-			}
+			ie.debugLog(ie.Sockets.DebugLevel > 10,
+				fmt.Sprintf("OpenSockets() Socket Open \t protocol:%d \t retries:%d", p, retries))
+
 		}
 	}
 
 	// Assertion
 	if sockets != len(ie.Protocols) {
-		log.Fatal(fmt.Sprintf("OpenSockets() failed to open both IPv4 and IPv6 sockets. !! sockets:%d", sockets))
+		log.Default().Fatalf("OpenSockets() failed to open both IPv4 and IPv6 sockets. !! sockets:%d", sockets)
 	}
 	ie.Sockets.Open = true
 
-	if ie.Sockets.DebugLevel > 10 {
-		ie.Log.Info("OpenSockets() ie.SocketsOpen = true")
-	}
+	ie.debugLog(ie.Sockets.DebugLevel > 10, "OpenSockets() ie.SocketsOpen = true")
+
 }
 
 // CloseSockets() closes the sockets with some assertion checks
 func (ie *ICMPEngine) CloseSockets() {
 
-	if ie.Sockets.DebugLevel > 10 {
-		ie.Log.Info("CloseSockets() acquiring lock")
-	}
+	ie.debugLog(ie.Sockets.DebugLevel > 10, "CloseSockets() acquiring lock")
 
 	ie.Lock()
 	defer ie.Unlock()
 
-	if ie.Sockets.DebugLevel > 10 {
-		ie.Log.Info("CloseSockets() lock acquired")
-	}
+	ie.debugLog(ie.Sockets.DebugLevel > 10, "CloseSockets() lock acquired")
 
 	var sockets int
 	for _, p := range ie.Protocols {
@@ -120,13 +111,11 @@ func (ie *ICMPEngine) CloseSockets() {
 	}
 	// Assertion
 	if sockets != len(ie.Protocols) {
-		log.Fatal(fmt.Sprintf("Shutdown() closing failed to close both IPv4 and IPv6 sockets. !! sockets:%d", sockets))
+		log.Fatalf("Shutdown() closing failed to close both IPv4 and IPv6 sockets. !! sockets:%d", sockets)
 	}
 	ie.Sockets.Open = false
 
-	if ie.Sockets.DebugLevel > 10 {
-		ie.Log.Info("CloseSockets() sockets closed")
-	}
+	ie.debugLog(ie.Sockets.DebugLevel > 10, "CloseSockets() sockets closed")
 }
 
 // HackSysctl does sysctl -w net.ipv4.ping_group_range=0 2147483647

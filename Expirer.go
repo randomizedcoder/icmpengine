@@ -11,7 +11,6 @@ package icmpengine
 // Both these ideas could help if performance becomes an issue, which currnetly it is not.
 
 import (
-	"container/list"
 	"fmt"
 	"time"
 )
@@ -25,24 +24,21 @@ const (
 // CheckExpirerIsRunning assumes the LOCK is already held by Pinger
 func (ie *ICMPEngine) CheckExpirerIsRunning() (started bool) {
 
-	if ie.Expirers.DebugLevel > 100 {
-		ie.Log.Info("CheckExpirerIsRunning() start")
-	}
-	if ie.Expirers.Running {
-		if ie.Expirers.DebugLevel > 100 {
-			ie.Log.Info("CheckExpirerIsRunning ie.Expirers.Running")
-		}
-		started = false
-	} else {
-		ie.Expirers.WG.Add(1)
-		go ie.ExpirerConfig(ie.Expirers.FakeSuccess)
-		ie.Expirers.Running = true
+	ie.debugLog(ie.Expirers.DebugLevel > 100, "CheckExpirerIsRunning() start")
 
-		if ie.Expirers.DebugLevel > 100 {
-			ie.Log.Info("CheckExpirerIsRunning started")
-		}
-		started = true
+	if ie.Expirers.Running {
+		ie.debugLog(ie.Expirers.DebugLevel > 100, "CheckExpirerIsRunning ie.Expirers.Running")
+		started = false
+		return started
 	}
+
+	ie.Expirers.WG.Add(1)
+	go ie.ExpirerConfig(ie.Expirers.FakeSuccess)
+	ie.Expirers.Running = true
+
+	ie.debugLog(ie.Expirers.DebugLevel > 100, "CheckExpirerIsRunning started")
+	started = true
+
 	return started
 }
 
@@ -51,107 +47,110 @@ func (ie *ICMPEngine) CheckExpirerIsRunning() (started bool) {
 // The "Config" implies that we can configure the FakeSuccess, which is used for testing
 func (ie *ICMPEngine) ExpirerConfig(FakeSuccess bool) {
 
-	if ie.Expirers.DebugLevel > 100 {
-		ie.Log.Info(fmt.Sprintf("Expirer start \t FakeSuccess:%t", FakeSuccess))
-	}
+	ie.debugLog(ie.Expirers.DebugLevel > 100, fmt.Sprintf("Expirer start \t FakeSuccess:%t", FakeSuccess))
 
 	defer ie.Expirers.WG.Done()
 
+	ie.debugLog(ie.Expirers.DebugLevel > 100, "Expirer trying to acquire ie.RLock()")
 	ie.RLock()
-	done := ie.Expirers.DoneCh
+	doneCh := ie.Expirers.DoneCh
+	newSoonestCh := ie.Expirers.NewSoonestCh
 	ie.RUnlock()
+	ie.debugLog(ie.Expirers.DebugLevel > 100, "Expirer ie.RUnlock()-ed")
 
 	for i, keepLooping := 0, true; keepLooping; i++ {
 
-		var el *list.Element
-		var exists bool
-		var len int
-		var SoonestPing Pings
-		var sleepDuration time.Duration
+		ie.debugLog(ie.Expirers.DebugLevel > 100, fmt.Sprintf("Expirer \t i:%d", i))
 
-		if ie.Expirers.DebugLevel > 100 {
-			ie.Log.Info(fmt.Sprintf("Expirer \t i:%d", i))
-		}
 		select {
-		case <-done:
-			if ie.Expirers.DebugLevel > 10 {
-				ie.Log.Info("Expirer received done")
-			}
+		case <-doneCh:
+			ie.debugLog(ie.Expirers.DebugLevel > 100, "Expirer received done")
 			keepLooping = false
 			continue
 		default:
 			// non-block
 		}
 
-		if ie.Expirers.DebugLevel > 100 {
-			ie.Log.Info(fmt.Sprintf("Expirer trying to acquire ie.Lock() to check len\t i:%d", i))
-		}
+		ie.debugLog(ie.Expirers.DebugLevel > 100,
+			fmt.Sprintf("Expirer trying to acquire ie.Lock() to check len\t i:%d", i))
+
 		ie.Lock() // <-------------------------- LOCK!!
-		len = ie.Pingers.ExpiresDLL.Len()
-		if len == 0 {
+		if ie.Pingers.ExpiresBtree.Len() == 0 {
 			ie.Expirers.Running = false
 			ie.Unlock() // <-------------------- UNLOCK!!
-			if ie.Expirers.DebugLevel > 100 {
-				ie.Log.Info(fmt.Sprintf("Expirer ie.Unlock(). No more elements in expires list, len:%d.  Returning", len))
-			}
+
+			ie.debugLog(ie.Expirers.DebugLevel > 100,
+				"Expirer ie.Unlock(). No more elements in expires list, len == 0.  Returning")
+
 			keepLooping = false
 			return
 		}
 
-		el = ie.Pingers.ExpiresDLL.Front()
-		SoonestPing = copyPing(ie.Pingers.ExpiresDLL.Front())
+		soonestPing, ok := ie.Pingers.ExpiresBtree.Min()
+		if !ok {
+			ie.debugLog(ie.Expirers.DebugLevel > 100, "Expirer no minimum? returning")
+			keepLooping = false
+			return
+		}
 
-		if FakeSuccess && !SoonestPing.FakeDrop {
-			if ie.Expirers.DebugLevel > 100 {
-				ie.Log.Info("Expirer FakeSuccess doing delete")
-			}
-			successCh := ie.Pingers.SuccessChs[SoonestPing.NetaddrIP]
-			ie.Pingers.ExpiresDLL.Remove(el)
-			delete(ie.Pingers.Pings[SoonestPing.NetaddrIP], SoonestPing.Seq)
+		if FakeSuccess && !soonestPing.FakeDrop {
+			ie.debugLog(ie.Expirers.DebugLevel > 100, "Expirer FakeSuccess doing delete")
+
+			ie.Pingers.ExpiresBtree.Delete(soonestPing)
+			delete(ie.Pingers.Pings[soonestPing.NetaddrIP], soonestPing.Seq)
+			successCh := ie.Pingers.PingersChannels[soonestPing.NetaddrIP].SuccessCh
 			ie.Unlock() // <-------------------- UNLOCK!!
-			if ie.Expirers.DebugLevel > 100 {
-				ie.Log.Info("Expirer FakeSuccess ie.Unlock()")
-			}
+
+			ie.debugLog(ie.Expirers.DebugLevel > 100, "Expirer FakeSuccess ie.Unlock()")
+
 			fakeReceivedTime := time.Now()
-			rttDuration := fakeReceivedTime.Sub(SoonestPing.Send)
+			rttDuration := fakeReceivedTime.Sub(soonestPing.SendTime)
 			successCh <- PingSuccess{
-				Seq:      SoonestPing.Seq,
-				Send:     SoonestPing.Send,
+				Seq:      soonestPing.Seq,
+				Send:     soonestPing.SendTime,
 				Received: fakeReceivedTime,
 				RTT:      rttDuration,
 			}
-			if ie.Expirers.DebugLevel > 100 {
-				ie.Log.Info(fmt.Sprintf("Expirer \t i:%d Sent <- PingSuccess FakeSuccess", i))
-			}
+			ie.debugLog(ie.Expirers.DebugLevel > 100,
+				fmt.Sprintf("Expirer \t i:%d Sent <- PingSuccess FakeSuccess", i))
+
 			continue
 		}
 		ie.Unlock() // <------------------------ UNLOCK!!
 
-		sleepDuration = time.Until(SoonestPing.Expiry)
+		sleepDuration := time.Until(soonestPing.ExpiryTime)
+		timer := time.NewTimer(sleepDuration)
 
-		if ie.Expirers.DebugLevel > 1000 {
-			ie.Log.Info(fmt.Sprintf("Expirer \t i:%d going to sleep duration:%s", i, sleepDuration.String()))
-		}
+		ie.debugLog(ie.Expirers.DebugLevel > 100,
+			fmt.Sprintf("Expirer \t i:%d going to sleep duration:%s", i, sleepDuration.String()))
 
 		select {
-		case <-time.After(sleepDuration):
-			if ie.Expirers.DebugLevel > 100 {
-				ie.Log.Info(fmt.Sprintf("Expirer wakes up after duration:%s", sleepDuration.String()))
+		case <-timer.C:
+			ie.debugLog(ie.Expirers.DebugLevel > 100,
+				fmt.Sprintf("Expirer wakes up after duration:%s", sleepDuration.String()))
+
+		case exp := <-newSoonestCh:
+			ie.debugLog(ie.Expirers.DebugLevel > 100, "Expirer exp := <-newSoonestCh, resetting timer")
+			// Reset the timer
+			// https://pkg.go.dev/time#Timer.Reset
+			if !timer.Stop() {
+				<-timer.C
 			}
-		case <-done:
-			if ie.Expirers.DebugLevel > 10 {
-				ie.Log.Info("Expirer was sleeping, but received done")
-			}
+			sleepDuration = time.Until(exp)
+			timer.Reset(sleepDuration)
+
+		case <-doneCh:
+			ie.debugLog(ie.Expirers.DebugLevel > 100, "Expirer was sleeping, but received done")
+
 			keepLooping = false
 			// NO DEFAULT - This is BLOCKING
 			//default:
 		}
 
-		if ie.Expirers.DebugLevel > 100 {
-			ie.Log.Info("Expirer trying to acquire ie.RLock() to check exists")
-		}
+		ie.debugLog(ie.Expirers.DebugLevel > 100, "Expirer woke up, trying to acquire ie.RLock() to check exists")
+
 		ie.RLock() // <-------------------------- READ LOCK!!
-		el, exists = ie.Pingers.Pings[SoonestPing.NetaddrIP][SoonestPing.Seq]
+		p, exists := ie.Pingers.Pings[soonestPing.NetaddrIP][soonestPing.Seq]
 		ie.RUnlock() // <------------------------ READ UNLOCK!!
 		if ie.Expirers.DebugLevel > 100 {
 			ie.Log.Info(fmt.Sprintf("Expirer ie.RUnlock(), exists:%t", exists))
@@ -159,58 +158,38 @@ func (ie *ICMPEngine) ExpirerConfig(FakeSuccess bool) {
 
 		// If the key still exists, then the Receiver did NOT get a return packet, so the timeout has expired
 		if exists {
-			if ie.Expirers.DebugLevel > 100 {
-				ie.Log.Info(fmt.Sprintf("Expirer found expired \t IP:%s \t Seq:%d deleting", SoonestPing.NetaddrIP.String(), SoonestPing.Seq))
-			}
+			ie.debugLog(ie.Expirers.DebugLevel > 100, fmt.Sprintf("Expirer found expired \t IP:%s \t Seq:%d deleting",
+				soonestPing.NetaddrIP.String(), soonestPing.Seq))
 
-			if ie.Expirers.DebugLevel > 100 {
-				ie.Log.Info("Expirer exists - trying to acquire ie.Lock()")
-			}
+			ie.debugLog(ie.Expirers.DebugLevel > 100, "Expirer exists - trying to acquire ie.Lock()")
 
 			ie.Lock() // <----------------------- LOCK!!
-			delete(ie.Pingers.Pings[SoonestPing.NetaddrIP], SoonestPing.Seq)
-			ie.Pingers.ExpiresDLL.Remove(el)
-			expiredCh := ie.Pingers.ExpiredChs[SoonestPing.NetaddrIP]
+			delete(ie.Pingers.Pings[soonestPing.NetaddrIP], soonestPing.Seq)
+			ie.Pingers.ExpiresBtree.Delete(p)
+			expiredCh := ie.Pingers.PingersChannels[soonestPing.NetaddrIP].ExpiredCh
 			ie.Unlock() // <--------------------- UNLOCK!!
 
-			if ie.Expirers.DebugLevel > 100 {
-				ie.Log.Info("Expirer exists - ie.Unlock()")
-			}
+			ie.debugLog(ie.Expirers.DebugLevel > 100, "Expirer exists - ie.Unlock()")
 
 			expiredCh <- PingExpired{
-				Seq:  SoonestPing.Seq,
-				Send: SoonestPing.Send,
+				Seq:  soonestPing.Seq,
+				Send: soonestPing.SendTime,
 			}
-			if ie.Expirers.DebugLevel > 100 {
-				ie.Log.Info(fmt.Sprintf("Expirer \t i:%d Sent <- PingExpired", i))
-			}
+			ie.debugLog(ie.Expirers.DebugLevel > 100, fmt.Sprintf("Expirer \t i:%d Sent <- PingExpired", i))
+
 		} else {
-			if ie.Expirers.DebugLevel > 100 {
-				ie.Log.Info("Expirer expiry no longer exists, so we must have received a response.  Excellent.")
-			}
+			ie.debugLog(ie.Expirers.DebugLevel > 100,
+				"Expirer expiry no longer exists, so we must have received a response.  Excellent.")
 		}
 	}
 
-	if ie.Expirers.DebugLevel > 100 {
-		ie.Log.Info("Expirer - trying to acquire ie.Lock() to ie.Expirers.Running = false, Defer unlock")
-	}
+	ie.debugLog(ie.Expirers.DebugLevel > 100,
+		"Expirer - trying to acquire ie.Lock() to ie.Expirers.Running = false, Defer unlock")
+
 	ie.Lock()
 	defer ie.Unlock()
-	len := ie.Pingers.ExpiresDLL.Len()
+	len := ie.Pingers.ExpiresBtree.Len()
 	ie.Expirers.Running = false
 
-	if ie.Expirers.DebugLevel > 100 {
-		ie.Log.Info(fmt.Sprintf("Expirer len:%d ie.ExpirerRunning = false.  Expirer complete. defer ie.Unlock()", len))
-	}
-}
-
-// copyPing is a small helper to copy by value the ping
-// this is just to help reduce code in the main function
-func copyPing(el *list.Element) (ping Pings) {
-	ping.NetaddrIP = el.Value.(Pings).NetaddrIP
-	ping.Seq = el.Value.(Pings).Seq
-	ping.Send = el.Value.(Pings).Send
-	ping.Expiry = el.Value.(Pings).Expiry
-	ping.FakeDrop = el.Value.(Pings).FakeDrop
-	return ping
+	ie.debugLog(ie.Expirers.DebugLevel > 100, fmt.Sprintf("Expirer len:%d ie.ExpirerRunning = false.  Expirer complete. defer ie.Unlock()", len))
 }

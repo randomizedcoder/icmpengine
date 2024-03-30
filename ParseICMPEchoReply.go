@@ -22,7 +22,7 @@ type ICMPEchoReply struct {
 
 // ParseICMPEchoReply parses the ICMP echo reply messages
 // This was originally based on on the the golang standard icmp
-// ParseMessage, which for unknown reasons don't parse ICMP echo
+// ParseMessage, which for unknown reasons doesn't parse ICMP echo
 // https://pkg.go.dev/golang.org/x/net/icmp#ParseMessage
 // https://github.com/golang/net/blob/7fd8e65b6420/icmp/message.go#L139
 func ParseICMPEchoReply(b []byte) (*ICMPEchoReply, error) {
