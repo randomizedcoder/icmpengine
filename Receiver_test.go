@@ -3,12 +3,6 @@ package icmpengine
 import (
 	"fmt"
 	"testing"
-
-	hclog "github.com/hashicorp/go-hclog"
-)
-
-const (
-	testDebugLevel int = 11
 )
 
 // testsT struct defines the inputs for the tests
@@ -63,31 +57,13 @@ func TestTiarCalculator(t *testing.T) {
 		{5.50, 300, 100, 200, 300, 2, 3, 4, 4, true},
 	}
 
-	logger := hclog.Default()
-	if testDebugLevel > 100 {
-		logger.Info("\n\n======================================")
-	}
-
 	for i, test := range tests {
-		if testDebugLevel > 100 {
-			logger.Info("======================================")
-		}
-		if testDebugLevel > 100 {
-			logger.Info(fmt.Sprintf("TesttimeoutsInARowCalculator \t i:%d \t test.i:%.2f \t test.result:%.2f", i, test.i, test.result))
-		}
-
-		result := tiarCalculator(test.tiar, test.low, test.medium, test.high, test.mLow, test.mMedium, test.mHigh)
-
-		if result != test.result {
-			t.Errorf(fmt.Sprintf("TesttimeoutsInARowCalculator\ti:%d\ttest.i:%f", i, test.i))
-		}
-
-		if testDebugLevel > 10 {
-			logger.Info(fmt.Sprintf("TesttimeoutsInARowCalculator \t i:%d \t test.i:%.2f \t test.result:%.2f \t result:%.2f", i, test.i, test.result, result))
-		}
-
-		if testDebugLevel > 100 {
-			logger.Info("======================================")
-		}
+		t.Run(fmt.Sprintf("case_%d_i_%.2f", i, test.i), func(t *testing.T) {
+			result := tiarCalculator(test.tiar, test.low, test.medium, test.high, test.mLow, test.mMedium, test.mHigh)
+			if result != test.result {
+				t.Errorf("tiarCalculator(tiar=%d, low=%d, medium=%d, high=%d) = %.2f, want %.2f",
+					test.tiar, test.low, test.medium, test.high, result, test.result)
+			}
+		})
 	}
 }

@@ -12,13 +12,19 @@ Key features include:
 - - ( Currently there is a single Expirer and linked list, but this could be sperated per protocol if required )
 - Leverages the native golang [https://golang.org/x/net/icmp](https://golang.org/x/net/icmp) library
 - IPPROTO_ICMP sockets which are NonPrivilegedPing [https://lwn.net/Articles/422330/](https://lwn.net/Articles/422330/)
-- Uses IP type [https://pkg.go.dev/inet.af/netaddr](https://pkg.go.dev/inet.af/netaddr), see also: [https://tailscale.com/blog/netaddr-new-ip-type-for-go/](https://tailscale.com/blog/netaddr-new-ip-type-for-go/)
+- Uses the standard library IP type [https://pkg.go.dev/net/netip](https://pkg.go.dev/net/netip) (previously used the now-deprecated `inet.af/netaddr`)
 - [https://golang.org/pkg/sync/#Pool](https://golang.org/pkg/sync/#Pool) is used for the receive buffers, although this may not be required
 - Please note packet size and DSCP bits are NOT currently supported
 - Performance testing across a low latency LAN showed ICMPengine can perform at least 60k pings in <15s
 
 Although this is designed to be used as a library, a basic implmentation is demonstrated here:
-[./cmd/icmpengine/icmpengine.go](./cmd/icmpengine/icmpengine.go)
+[./cmd/icmpengine/main.go](./cmd/icmpengine/main.go)
+
+Import path:
+
+```
+go get github.com/randomizedcoder/icmpengine
+```
 
 ```
 sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
@@ -31,28 +37,27 @@ sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 Dependancy                                                     | License         | Link
 ---                                                            | ---             | ---
 Golang                                                         | BSD             | https://golang.org/LICENSE
-github.com/go-cmd/cmd v1.3.0                                   | MIT             | https://github.com/go-cmd/cmd/blob/master/LICENSE
-github.com/go-kit/kit v0.10.0                                  | MIT             | https://github.com/go-kit/kit/blob/master/LICENSE
-github.com/hashicorp/go-hclog v0.16.2                          | MIT             | https://github.com/hashicorp/go-hclog/blob/master/LICENSE
-github.com/pkg/profile v1.6.0                                  | BSD             | https://github.com/pkg/profile/blob/master/LICENSE
-github.com/prometheus/client_golang v1.11.0                    | Apache 2.0      | https://github.com/prometheus/client_golang/blob/master/LICENSE
-golang.org/x/net v0.0.0-20210726213435-c6fcb2dbf985            | BSD             | https://golang.org/LICENSE
-inet.af/netaddr v0.0.0-20210721214506-ce7a8ad02cc1             | BSD-3           | https://pkg.go.dev/inet.af/netaddr?tab=licenses
+github.com/go-cmd/cmd v1.4.3                                   | MIT             | https://github.com/go-cmd/cmd/blob/master/LICENSE
+github.com/hashicorp/go-hclog v1.6.3                           | MIT             | https://github.com/hashicorp/go-hclog/blob/master/LICENSE
+github.com/pkg/profile v1.7.0                                  | BSD             | https://github.com/pkg/profile/blob/master/LICENSE
+github.com/prometheus/client_golang v1.23.2                    | Apache 2.0      | https://github.com/prometheus/client_golang/blob/master/LICENSE
+golang.org/x/net v0.57.0                                       | BSD             | https://golang.org/LICENSE
+
+The IP type is now the standard library [net/netip](https://pkg.go.dev/net/netip),
+so `inet.af/netaddr` is no longer a dependency.
 
 ```
-das@das-dell5580:~/go/src/gitlab.edgecastcdn.net/dseddon/icmpengine$ cat go.mod 
-module gitlab.edgecastcdn.net/dseddon/icmpengine
+$ cat go.mod
+module github.com/randomizedcoder/icmpengine
 
-go 1.16
+go 1.26.5
 
 require (
-	github.com/go-cmd/cmd v1.3.0
-	github.com/go-kit/kit v0.10.0 // indirect
-	github.com/hashicorp/go-hclog v0.16.2
-	github.com/pkg/profile v1.6.0
-	github.com/prometheus/client_golang v1.11.0
-	golang.org/x/net v0.0.0-20210726213435-c6fcb2dbf985
-	inet.af/netaddr v0.0.0-20210721214506-ce7a8ad02cc1
+	github.com/go-cmd/cmd v1.4.3
+	github.com/hashicorp/go-hclog v1.6.3
+	github.com/pkg/profile v1.7.0
+	github.com/prometheus/client_golang v1.23.2
+	golang.org/x/net v0.57.0
 )
 ```
 

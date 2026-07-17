@@ -20,14 +20,13 @@ import (
 	"container/list"
 	"fmt"
 	"log"
-	"math/rand"
+	"net/netip"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/go-hclog"
 	"golang.org/x/net/icmp"
-	"inet.af/netaddr"
 )
 
 const (
@@ -99,11 +98,11 @@ type ExpirersT struct {
 type PingersT struct {
 	WG         sync.WaitGroup
 	DoneCh     chan struct{}
-	Pings      map[netaddr.IP]map[Sequence]*list.Element
+	Pings      map[netip.Addr]map[Sequence]*list.Element
 	ExpiresDLL *list.List
-	SuccessChs map[netaddr.IP]chan PingSuccess
-	ExpiredChs map[netaddr.IP]chan PingExpired
-	DonesChs   map[netaddr.IP]chan struct{}
+	SuccessChs map[netip.Addr]chan PingSuccess
+	ExpiredChs map[netip.Addr]chan PingExpired
+	DonesChs   map[netip.Addr]chan struct{}
 	DebugLevel int
 }
 
@@ -111,7 +110,7 @@ type Sequence uint16
 type WorkerType rune
 type Protocol uint8
 type Pings struct {
-	NetaddrIP netaddr.IP
+	NetaddrIP netip.Addr
 	Seq       Sequence
 	Send      time.Time
 	Expiry    time.Time
@@ -174,7 +173,8 @@ func New(l hclog.Logger, done chan struct{}, to time.Duration, rd time.Duration,
 // e.g. You can defer opening the sockets, and starting the receivers until you actually need them
 func NewFullConfig(logger hclog.Logger, done chan struct{}, timeout time.Duration, deadline time.Duration, start bool, receivers4 int, receivers6 int, SplayReceivers bool, debugLevels DebugLevelsT, fakeSuccess bool) (icmpEngine *ICMPEngine) {
 
-	rand.Seed(time.Now().UnixNano())
+	// Note: as of Go 1.20 the global math/rand source is automatically seeded,
+	// so there is no need to call rand.Seed here (it is now deprecated).
 
 	// Make all the maps here, but create all the channels as part of Start() in StartChannels()
 	icmpEngine = &ICMPEngine{
@@ -209,11 +209,11 @@ func NewFullConfig(logger hclog.Logger, done chan struct{}, timeout time.Duratio
 			FakeSuccess: fakeSuccess,
 		},
 		Pingers: PingersT{
-			Pings:      make(map[netaddr.IP]map[Sequence]*list.Element),
+			Pings:      make(map[netip.Addr]map[Sequence]*list.Element),
 			ExpiresDLL: list.New(),
-			SuccessChs: make(map[netaddr.IP]chan PingSuccess),
-			ExpiredChs: make(map[netaddr.IP]chan PingExpired),
-			DonesChs:   make(map[netaddr.IP]chan struct{}),
+			SuccessChs: make(map[netip.Addr]chan PingSuccess),
+			ExpiredChs: make(map[netip.Addr]chan PingExpired),
+			DonesChs:   make(map[netip.Addr]chan struct{}),
 			DebugLevel: debugLevels.P,
 		},
 	}

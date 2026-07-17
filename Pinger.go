@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
-	"inet.af/netaddr"
 
 	"container/list"
 	"log"
 	"net"
+	"net/netip"
 	"syscall"
 
 	"golang.org/x/net/icmp"
@@ -27,7 +27,7 @@ const (
 )
 
 type PingerResults struct {
-	IP             netaddr.IP
+	IP             netip.Addr
 	Successes      int
 	Failures       int
 	OutOfOrder     int
@@ -42,7 +42,7 @@ type PingerResults struct {
 }
 
 // PingerWithStatsChannel is the Pinger which sends stats on the output channel, rather than returning the values
-func (ie *ICMPEngine) PingerWithStatsChannel(IP netaddr.IP, packets Sequence, interval time.Duration, sortRTTs bool, DoneCh chan struct{}, wg *sync.WaitGroup, pingerResultsCh chan<- PingerResults) {
+func (ie *ICMPEngine) PingerWithStatsChannel(IP netip.Addr, packets Sequence, interval time.Duration, sortRTTs bool, DoneCh chan struct{}, wg *sync.WaitGroup, pingerResultsCh chan<- PingerResults) {
 
 	defer wg.Done()
 	if ie.Pingers.DebugLevel > 100 {
@@ -64,7 +64,7 @@ func (ie *ICMPEngine) PingerWithStatsChannel(IP netaddr.IP, packets Sequence, in
 // Pinger calls PingerConfig with:
 // - zero (0) probability of drop,
 // - no fake success
-func (ie *ICMPEngine) Pinger(IP netaddr.IP, packets Sequence, interval time.Duration, sortRTTs bool, DoneCh chan struct{}) (results PingerResults) {
+func (ie *ICMPEngine) Pinger(IP netip.Addr, packets Sequence, interval time.Duration, sortRTTs bool, DoneCh chan struct{}) (results PingerResults) {
 	results = ie.PingerConfig(IP, packets, interval, sortRTTs, DoneCh, 0)
 	return
 }
@@ -78,12 +78,12 @@ func (ie *ICMPEngine) Pinger(IP netaddr.IP, packets Sequence, interval time.Dura
 // Hash + DLL
 // www.cs.columbia.edu/~nahum/w6998/papers/sosp87-timing-wheels.pdf
 //
-// https://pkg.go.dev/inet.af/netaddr
+// https://pkg.go.dev/net/netip
 
 // Welford's math stolen from https://pkg.go.dev/github.com/eclesh/welford
 // Welford's one-pass algorithm for computing the mean and variance
 // of a set of numbers. For more information see Knuth (TAOCP Vol 2, 3rd ed, pg 232)
-func (ie *ICMPEngine) PingerConfig(IP netaddr.IP, packets Sequence, interval time.Duration, sortRTTs bool, DoneCh chan struct{}, dropProb float64) (results PingerResults) {
+func (ie *ICMPEngine) PingerConfig(IP netip.Addr, packets Sequence, interval time.Duration, sortRTTs bool, DoneCh chan struct{}, dropProb float64) (results PingerResults) {
 
 	if ie.Pingers.DebugLevel > 100 {
 		ie.Log.Info(fmt.Sprintf("Pinger started:\t[%s]", IP.String()))
@@ -143,7 +143,7 @@ func (ie *ICMPEngine) PingerConfig(IP netaddr.IP, packets Sequence, interval tim
 		var merr error
 		if !fakeSuccess || fakeDrop {
 			msg := buildICMPMessage(id, i, proto)
-			addr = &net.UDPAddr{IP: IP.IPAddr().IP, Port: 0}
+			addr = &net.UDPAddr{IP: net.IP(IP.AsSlice()), Port: 0}
 			wb, merr = msg.Marshal(nil)
 			if merr != nil {
 				log.Fatal(fmt.Sprintf("Pinger [%s] msg.Marshal(nil):%v", IP.String(), merr))

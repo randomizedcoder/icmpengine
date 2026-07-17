@@ -4,10 +4,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
-
-	"inet.af/netaddr"
 )
 
 const (
@@ -70,7 +69,6 @@ func tiarCalculator(tiar int, low int, medium int, high int, mLow float64, mMedi
 // this is mostly to allow checking for the done signal, and therefore allow closing down the Receivers
 // gracefully.
 // There is [Timeouts In A Row] code that increases these timeouts gradually, to decrease the ReadFrom thrashing
-//
 func (ie *ICMPEngine) Receiver(proto Protocol, index int, allDone <-chan struct{}, done <-chan struct{}) {
 
 	if ie.Sockets.DebugLevel > 100 {
@@ -146,7 +144,7 @@ func (ie *ICMPEngine) Receiver(proto Protocol, index int, allDone <-chan struct{
 						ie.Log.Info(fmt.Sprintf("Receiver \t proto:%d \t index:%d, SplitHostPort error::%s", proto, index, err))
 					}
 				}
-				ip := netaddr.MustParseIP(host)
+				ip := netip.MustParseAddr(host)
 				s := Sequence(echoReply.Seq)
 
 				ie.RLock() // <------------------ READ LOCK!!

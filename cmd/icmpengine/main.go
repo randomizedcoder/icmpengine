@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
@@ -14,9 +15,8 @@ import (
 	"github.com/pkg/profile"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"inet.af/netaddr"
 
-	"github.com/EdgeCast/icmpengine"
+	"github.com/randomizedcoder/icmpengine"
 )
 
 const (
@@ -152,9 +152,9 @@ func main() {
 			logger.Info(fmt.Sprintf("main \ti:%d\tip:[%s]\tblocking:%t", i, ip, *blocking))
 		}
 
-		destNetAddr, err := netaddr.ParseIP(ip)
+		destNetAddr, err := netip.ParseAddr(ip)
 		if err != nil {
-			log.Fatal("netaddr.ParseIP(IP) err:", err)
+			log.Fatal("netip.ParseAddr(IP) err:", err)
 		}
 
 		if debugLevel > 10 {
