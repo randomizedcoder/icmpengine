@@ -18,9 +18,6 @@ channel:
 runstop:
 	go test -failfast -timeout 2m --run TestRunStopLoop
 
-shutdown:
-	go test -failfast -timeout 60s --run TestPingersShutdown
-
 tiar:
 	go test -failfast -timeout 5s --run TestTiarCalculator
 

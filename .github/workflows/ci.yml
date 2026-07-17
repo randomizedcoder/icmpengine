@@ -1,0 +1,51 @@
+#
+# icmpengine/.github/workflows/ci.yml
+#
+name: CI
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+    branches: ["*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          check-latest: true
+
+      - name: Go version
+        run: go version
+
+      # The tests use non-privileged ICMP sockets on the loopback interface.
+      # GitHub's ubuntu runners restrict the ping group range by default, so
+      # widen it to allow icmp.ListenPacket to succeed without root.
+      - name: Allow non-privileged ICMP sockets
+        run: sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -failfast -timeout 4m ./...
+
+      - name: Test (race detector)
+        run: go test -race -failfast -timeout 4m ./...
+
+      - name: Build CLI
+        run: go build ./...
+        working-directory: cmd/icmpengine
