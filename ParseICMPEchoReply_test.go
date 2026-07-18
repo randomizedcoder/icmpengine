@@ -95,6 +95,32 @@ func assertEchoReply(t *testing.T, fn string, got *ICMPEchoReply, err error, wan
 	}
 }
 
+// FuzzParseICMPEchoReply checks the parser never panics and honors its
+// documented contract: inputs shorter than 8 bytes must error, and a nil error
+// must come with a non-nil result.
+func FuzzParseICMPEchoReply(f *testing.F) {
+	f.Add(makeEchoReplyBytes(0, 0, 0xf7ff, 0xabcd, 0x0007, 0))
+	f.Add(makeEchoReplyBytes(129, 0, 0x1234, 0x00ff, 0x00ff, 56))
+	f.Add([]byte{})
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0})
+
+	f.Fuzz(func(t *testing.T, b []byte) {
+		r, err := ParseICMPEchoReply(b)
+		if len(b) < 8 {
+			if err == nil {
+				t.Fatalf("input of %d bytes: err = nil, want error", len(b))
+			}
+			return
+		}
+		if err != nil {
+			return
+		}
+		if r == nil {
+			t.Fatal("err = nil but result = nil")
+		}
+	})
+}
+
 var benchInput = makeEchoReplyBytes(0, 0, 0xf7ff, 0xabcd, 0x0007, 56)
 
 func BenchmarkParseICMPEchoReply(b *testing.B) {

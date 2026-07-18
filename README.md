@@ -1,34 +1,91 @@
 # ICMPEngine
 
-ICMPengine is a small library for sending non-privilged ICMP echo requests and recieving replies.
+ICMPEngine is a small, embeddable library for sending non-privileged ICMP echo
+requests and receiving replies concurrently, without blocking on per-packet
+timeouts.
 
-Key features include:
-- Single IPv4 socket, and single IPv6 socket
-- Does not wait for timeouts on packets, instead it can proceed to send more
-- Single expiry timer
-- - Uses double linked list to track the soonest single expiry timer, rather than having many timers
-- - Currently because it uses [https://golang.org/pkg/container/list](https://golang.org/pkg/container/list) all the expiry timers need to be the duration ( to allow inserting at the back of the list )
-- - ( Should move to [https://golang.org/pkg/container/heap/](https://golang.org/pkg/container/heap/) )
-- - ( Currently there is a single Expirer and linked list, but this could be sperated per protocol if required )
-- Leverages the native golang [https://golang.org/x/net/icmp](https://golang.org/x/net/icmp) library
-- IPPROTO_ICMP sockets which are NonPrivilegedPing [https://lwn.net/Articles/422330/](https://lwn.net/Articles/422330/)
-- Uses the standard library IP type [https://pkg.go.dev/net/netip](https://pkg.go.dev/net/netip) (previously used the now-deprecated `inet.af/netaddr`)
-- [https://golang.org/pkg/sync/#Pool](https://golang.org/pkg/sync/#Pool) is used for the receive buffers, although this may not be required
-- Please note packet size and DSCP bits are NOT currently supported
-- Performance testing across a low latency LAN showed ICMPengine can perform at least 60k pings in <15s
-
-Although this is designed to be used as a library, a basic implmentation is demonstrated here:
-[./cmd/icmpengine/main.go](./cmd/icmpengine/main.go)
-
-Import path:
+Key features:
+- One IPv4 socket and one IPv6 socket; matches replies to requests across many destinations concurrently.
+- Does not wait for a packet's timeout before sending the next — outstanding pings are tracked centrally.
+- A single expiry timer tracks the soonest-expiring outstanding ping using [container/heap](https://pkg.go.dev/container/heap) (a typed priority queue), so timeouts need not all be identical.
+- Built to embed: `context.Context` cancellation, functional-options construction, errors returned instead of `log.Fatal`, and standard-library [log/slog](https://pkg.go.dev/log/slog) logging (pass `nil` for none — no logging dependency).
+- Leverages [golang.org/x/net/icmp](https://pkg.go.dev/golang.org/x/net/icmp) and IPPROTO_ICMP NonPrivilegedPing sockets ([lwn.net/Articles/422330](https://lwn.net/Articles/422330/)).
+- Uses the standard library [net/netip](https://pkg.go.dev/net/netip) IP type.
+- Note: packet size and DSCP bits are NOT currently supported.
 
 ```
 go get github.com/randomizedcoder/icmpengine
 ```
 
+Non-privileged ICMP on Linux requires the ping group range to include your gid:
+
 ```
 sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 ```
+
+## Quickstart
+
+Ping a single host (see [./example/simple](./example/simple/main.go)):
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"net/netip"
+	"time"
+
+	"github.com/randomizedcoder/icmpengine"
+)
+
+func main() {
+	eng, err := icmpengine.New(
+		icmpengine.WithTimeout(500 * time.Millisecond),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	ctx := context.Background()
+	if err := eng.Start(ctx); err != nil {
+		panic(err)
+	}
+	defer eng.Close()
+
+	res, err := eng.Ping(ctx, netip.MustParseAddr("8.8.8.8"), 10, 100*time.Millisecond, icmpengine.SortRTTs())
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("%s: success=%d/%d min=%s mean=%s max=%s\n",
+		res.IP, res.Successes, res.Count, res.Min, res.Mean, res.Max)
+}
+```
+
+Ping many hosts concurrently with a bounded worker pool
+(see [./example/concurrent](./example/concurrent/main.go)):
+
+```go
+targets := []icmpengine.Target{
+	{Addr: netip.MustParseAddr("8.8.8.8"), Count: 20, Interval: 50 * time.Millisecond},
+	{Addr: netip.MustParseAddr("1.1.1.1"), Count: 20, Interval: 50 * time.Millisecond},
+}
+results, err := eng.PingAll(ctx, 4 /* workers */, targets) // results aligned to targets
+```
+
+Runnable examples and a fuller CLI:
+
+```
+go run ./example/simple     -dest 8.8.8.8 -count 5
+go run ./example/concurrent -dest 8.8.8.8,1.1.1.1 -workers 4
+go run ./cmd/icmpengine     -dest 127.0.0.1,::1 -count 10
+```
+
+### Logging
+
+The engine logs via `log/slog`. Pass `icmpengine.WithLogger(l)` to supply a
+`*slog.Logger`, or omit it (or pass `nil`) to disable logging entirely — there is
+no logging dependency to pull in.
 
 <img src="./icmpengine.png" alt="xtcp diagram" width="75%" height="75%"/>
 
@@ -85,23 +142,26 @@ Dependancy                                                     | License        
 ---                                                            | ---             | ---
 Golang                                                         | BSD             | https://golang.org/LICENSE
 github.com/go-cmd/cmd v1.4.3                                   | MIT             | https://github.com/go-cmd/cmd/blob/master/LICENSE
-github.com/hashicorp/go-hclog v1.6.3                           | MIT             | https://github.com/hashicorp/go-hclog/blob/master/LICENSE
 github.com/pkg/profile v1.7.0                                  | BSD             | https://github.com/pkg/profile/blob/master/LICENSE
 github.com/prometheus/client_golang v1.23.2                    | Apache 2.0      | https://github.com/prometheus/client_golang/blob/master/LICENSE
 golang.org/x/net v0.57.0                                       | BSD             | https://golang.org/LICENSE
 
-The IP type is now the standard library [net/netip](https://pkg.go.dev/net/netip),
-so `inet.af/netaddr` is no longer a dependency.
+The IP type is the standard library [net/netip](https://pkg.go.dev/net/netip),
+and logging is the standard library [log/slog](https://pkg.go.dev/log/slog), so
+neither `inet.af/netaddr` nor `hashicorp/go-hclog` is a dependency any more.
+
+The **library** itself only needs `golang.org/x/net`. The other modules below are
+used solely by the `cmd/icmpengine` CLI (profiling, Prometheus metrics, and the
+root sysctl helper), so embedding the library does not pull them in.
 
 ```
 $ cat go.mod
 module github.com/randomizedcoder/icmpengine
 
-go 1.26.5
+go 1.26.4
 
 require (
 	github.com/go-cmd/cmd v1.4.3
-	github.com/hashicorp/go-hclog v1.6.3
 	github.com/pkg/profile v1.7.0
 	github.com/prometheus/client_golang v1.23.2
 	golang.org/x/net v0.57.0
