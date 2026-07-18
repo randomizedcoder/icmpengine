@@ -15,16 +15,16 @@ func TestFakeDrop(t *testing.T) {
 
 	t.Run("prob_0_never_drops", func(t *testing.T) {
 		for i := range iterations {
-			if FakeDrop(0) {
-				t.Fatalf("FakeDrop(0) returned true on iteration %d, want always false", i)
+			if fakeDrop(0) {
+				t.Fatalf("fakeDrop(0) returned true on iteration %d, want always false", i)
 			}
 		}
 	})
 
 	t.Run("prob_1_always_drops", func(t *testing.T) {
 		for i := range iterations {
-			if !FakeDrop(1) {
-				t.Fatalf("FakeDrop(1) returned false on iteration %d, want always true", i)
+			if !fakeDrop(1) {
+				t.Fatalf("fakeDrop(1) returned false on iteration %d, want always true", i)
 			}
 		}
 	})
@@ -36,14 +36,14 @@ func TestFakeDrop(t *testing.T) {
 		t.Run("prob_band", func(t *testing.T) {
 			drops := 0
 			for range iterations {
-				if FakeDrop(prob) {
+				if fakeDrop(prob) {
 					drops++
 				}
 			}
 			got := float64(drops) / float64(iterations)
 			const tolerance = 0.05
 			if got < prob-tolerance || got > prob+tolerance {
-				t.Errorf("FakeDrop(%.2f) dropped %.3f of the time, want within +/-%.2f", prob, got, tolerance)
+				t.Errorf("fakeDrop(%.2f) dropped %.3f of the time, want within +/-%.2f", prob, got, tolerance)
 			}
 		})
 	}
@@ -54,15 +54,15 @@ func TestFakeDrop(t *testing.T) {
 func TestBuildICMPMessage(t *testing.T) {
 	tests := []struct {
 		name     string
-		proto    Protocol
+		proto    protocol
 		wantType uint8
 	}{
-		{name: "ipv4 uses echo request", proto: Protocol(4), wantType: uint8(ipv4.ICMPTypeEcho)},
-		{name: "ipv6 uses echo request", proto: Protocol(6), wantType: uint8(ipv6.ICMPTypeEchoRequest)},
+		{name: "ipv4 uses echo request", proto: protocol(4), wantType: uint8(ipv4.ICMPTypeEcho)},
+		{name: "ipv6 uses echo request", proto: protocol(6), wantType: uint8(ipv6.ICMPTypeEchoRequest)},
 	}
 
 	const id = 0x1234
-	const seq = Sequence(0x00ab)
+	const seq = sequence(0x00ab)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

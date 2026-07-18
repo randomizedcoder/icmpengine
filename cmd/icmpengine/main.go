@@ -1,27 +1,24 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/netip"
 	"os"
+	"os/signal"
 	"strings"
-	"sync"
+	"syscall"
 	"time"
 
-	"github.com/hashicorp/go-hclog"
 	"github.com/pkg/profile"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/randomizedcoder/icmpengine"
-)
-
-const (
-	debugLevel = 11
 )
 
 var (
@@ -32,25 +29,18 @@ var (
 )
 
 func main() {
-
 	dest := flag.String("dest", "127.0.0.1,::1", "Destination IPs to ping, comma separated, e.g. 8.8.8.8,8.8.4.4")
 	count := flag.Int("count", 10, "Count of icmps to send.")
-	interval := flag.Duration("interval", 10*time.Millisecond, "Interval between icmp echo request message sent.")
-	timeout := flag.Duration("timeout", 200*time.Millisecond, "Timeout to wait for arrival of a echo response message, before declaring it dropped.")
-	readDeadline := flag.Duration("readDeadline", 3*time.Second, "Receiver socket .SetReadDeadline timeout.  Essentially, how long to wait before checking the done channel.")
+	interval := flag.Duration("interval", 10*time.Millisecond, "Interval between icmp echo request messages sent.")
+	timeout := flag.Duration("timeout", 200*time.Millisecond, "Timeout to wait for an echo response before declaring it dropped.")
+	readDeadline := flag.Duration("readDeadline", 3*time.Second, "Receiver socket read deadline. Bounds how quickly shutdown is noticed.")
 	r4 := flag.Int("rPP4", 2, "Receivers IPv4")
 	r6 := flag.Int("rPP6", 2, "Receivers IPv6")
-	splayReceivers := flag.Bool("splay", false, "Splay the receivers")
-	blocking := flag.Bool("blocking", false, "blocking or channel mode")
-
-	di := flag.Int("di", 1, "ICMPengine debug level")
-	ds := flag.Int("ds", 1, "socket debug level")
-	dr := flag.Int("dr", 1, "receiver debug level")
-	de := flag.Int("de", 1, "expirers debug level")
-	dp := flag.Int("dp", 1, "pPingers debug level")
+	splayReceivers := flag.Bool("splay", false, "Splay the receiver start times")
+	concurrency := flag.Int("concurrency", 0, "Max concurrent pingers (0 = one per destination)")
 
 	version := flag.Bool("version", false, "show version")
-	logLevel := flag.String("log", "info", "Log level: NoLevel, Trace, Debug, Info, Warn, Error, Off")
+	logLevel := flag.String("log", "info", "Log level: debug, info, warn, error")
 	promBind := flag.String("promBind", ":8889", "Prometheus /metrics HTTP bind socket")
 	promPath := flag.String("promPath", "/metrics", "Prometheus metrics path")
 	pprof := flag.String("pprof", "", "enable profiling mode, options [cpu, mem, mutex, block, trace]")
@@ -58,173 +48,124 @@ func main() {
 	flag.Parse()
 
 	if *version {
-		fmt.Println("monitor\ttag:", tag, "\tcommit:", commit, "\tcompile date(UTC):", date)
+		fmt.Println("icmpengine\ttag:", tag, "\tcommit:", commit, "\tcompile date(UTC):", date)
 		os.Exit(0)
 	}
 
-	// ICMP sequence numbers are uint16; bound the count so the conversion
-	// below can't silently wrap.
+	// ICMP sequence numbers are uint16; bound the count.
 	if *count < 0 || *count > math.MaxUint16 {
-		log.Fatalf("count must be between 0 and %d (icmp sequence is uint16)", math.MaxUint16)
+		fmt.Fprintf(os.Stderr, "count must be between 0 and %d (icmp sequence is uint16)\n", math.MaxUint16)
+		os.Exit(2)
 	}
 
-	logger := hclog.New(&hclog.LoggerOptions{
-		Name:  "icmpengine",
-		Level: hclog.LevelFromString(*logLevel),
-	})
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parseLevel(*logLevel)}))
 
 	// "github.com/pkg/profile"
-	// https://dave.cheney.net/2013/07/07/introducing-profile-super-simple-profiling-for-go-programs
-	// e.g. ./icmpengine -pprof trace
-	// go tool trace trace.out
-	// e.g. ./icmpengine -pprof cpu
-	// go tool pprof -http=":8081" icmpengine cpu.pprof
-	logger.Info(fmt.Sprintf("*pprof:%s", *pprof))
+	// e.g. ./icmpengine -pprof cpu ; go tool pprof -http=":8081" icmpengine cpu.pprof
 	switch *pprof {
 	case "cpu":
 		defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")).Stop()
 	case "mem":
-		defer profile.Start(profile.MemProfile, profile.ProfilePath(".")).Stop() // heap
+		defer profile.Start(profile.MemProfile, profile.ProfilePath(".")).Stop()
 	case "mutex":
 		defer profile.Start(profile.MutexProfile, profile.ProfilePath(".")).Stop()
 	case "block":
 		defer profile.Start(profile.BlockProfile, profile.ProfilePath(".")).Stop()
 	case "trace":
 		defer profile.Start(profile.TraceProfile, profile.ProfilePath(".")).Stop()
-	default:
-		logger.Info("No profiling")
 	}
 
-	http.Handle(*promPath, promhttp.HandlerFor(
-		prometheus.DefaultGatherer,
-		promhttp.HandlerOpts{
-			EnableOpenMetrics: true,
-		},
-	))
-	// Explicit http.Server so ReadHeaderTimeout is set (an unbounded
-	// ListenAndServe is a slow-loris risk / gosec G114).
-	promSrv := &http.Server{
-		Addr:              *promBind,
-		ReadHeaderTimeout: 5 * time.Second,
+	startPrometheus(logger, *promBind, *promPath)
+
+	// Shut down cleanly on SIGINT/SIGTERM.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	eng, err := icmpengine.New(
+		icmpengine.WithLogger(logger),
+		icmpengine.WithTimeout(*timeout),
+		icmpengine.WithReadDeadline(*readDeadline),
+		icmpengine.WithReceivers(*r4, *r6),
+		icmpengine.WithSplayReceivers(*splayReceivers),
+	)
+	if err != nil {
+		logger.Error("creating engine", "err", err)
+		os.Exit(1)
 	}
-	go func() {
-		if err := promSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("prometheus http listener failed", "err", err)
+	if err := eng.Start(ctx); err != nil {
+		logger.Error("starting engine", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := eng.Close(); err != nil {
+			logger.Error("engine closed with error", "err", err)
 		}
 	}()
 
-	if debugLevel > 10 {
-		logger.Info("Prometheus http listener started", "*promBind", *promBind, "*promPath", *promPath)
+	targets, err := parseTargets(*dest, *count, *interval)
+	if err != nil {
+		logger.Error("bad destination", "err", err)
+		os.Exit(1)
 	}
 
-	// Main setup complete
-	//---------------------------------------
-
-	// Real work stuff starts here
-
-	var debugLevels = icmpengine.DebugLevelsT{
-		IE: *di,
-		S:  *ds,
-		R:  *dr,
-		E:  *de,
-		P:  *dp,
+	results, err := eng.PingAll(ctx, *concurrency, targets)
+	if err != nil {
+		logger.Error("ping", "err", err)
 	}
-
-	doneAll := make(chan struct{}, 2)
-	ie := icmpengine.NewFullConfig(logger, doneAll, *timeout, *readDeadline, false, *r4, *r6, *splayReceivers, debugLevels, false)
-	ie.Start()
-	wg := new(sync.WaitGroup)
-	wg.Add(1)
-	if debugLevel > 100 {
-		logger.Info("main go ie.Run(wg)")
-	}
-	go ie.Run(wg)
-
-	ips := strings.Split(*dest, ",")
-
-	// var ips []string = []string{"127.0.0.1", "::1"}
-	// var ips []string
-	// ips = []string{"127.0.0.1", "::1"}
-	// if len(*ip) > 0 {
-	// 	ips = []string{*ip}
-	// 	if debugLevel > 10 {
-	// 		logger.Info(fmt.Sprintf("ips now:%s", ips))
-	// 	}
-	// } else {
-	//	ips = []string{"127.0.0.1", "::1"}
-	// 	//var ips []string = []string{"::1"}
-	// 	//var ips []string = []string{"127.0.0.1"}
-	// }
-
-	sCh := make(chan icmpengine.PingerResults, len(ips))
-	pwg := new(sync.WaitGroup)
-	pDone := make(chan struct{}, 2)
-
-	if debugLevel > 10 {
-		logger.Info(fmt.Sprintf("main \tips:%s", ips))
-	}
-	for i, ip := range ips {
-
-		if debugLevel > 10 {
-			logger.Info(fmt.Sprintf("main \ti:%d\tip:[%s]\tblocking:%t", i, ip, *blocking))
+	for i := range results {
+		r := &results[i]
+		loss := 0.0
+		if r.Count > 0 {
+			loss = 100 * float64(r.Failures) / float64(r.Count)
 		}
+		fmt.Printf("%-39s sent=%d success=%d loss=%.1f%% min=%s mean=%s max=%s\n",
+			r.IP, r.Count, r.Successes, loss, r.Min, r.Mean, r.Max)
+	}
+}
 
-		destNetAddr, err := netip.ParseAddr(ip)
+// startPrometheus serves the metrics endpoint in the background.
+func startPrometheus(logger *slog.Logger, bind, path string) {
+	http.Handle(path, promhttp.HandlerFor(
+		prometheus.DefaultGatherer,
+		promhttp.HandlerOpts{EnableOpenMetrics: true},
+	))
+	srv := &http.Server{Addr: bind, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("prometheus http listener failed", "err", err)
+		}
+	}()
+	logger.Info("prometheus listener started", "bind", bind, "path", path)
+}
+
+// parseTargets builds the PingAll target list from a comma-separated dest list.
+func parseTargets(dest string, count int, interval time.Duration) ([]icmpengine.Target, error) {
+	var targets []icmpengine.Target
+	for ip := range strings.SplitSeq(dest, ",") {
+		addr, err := netip.ParseAddr(strings.TrimSpace(ip))
 		if err != nil {
-			log.Fatal("netip.ParseAddr(IP) err:", err)
+			return nil, fmt.Errorf("%q: %w", ip, err)
 		}
-
-		if debugLevel > 10 {
-			logger.Info(fmt.Sprintf("main starting ie.Pinger, index:%d\tip:[%s]\tcount:%d\tinterval:%s", i, destNetAddr.String(), *count, (*interval).String()))
-		}
-		if *blocking {
-			r := ie.Pinger(destNetAddr, icmpengine.Sequence(*count), *interval, true, pDone)
-
-			if debugLevel > 10 {
-				ie.Log.Info(fmt.Sprintf("main:[%s] \tsuccesses:%d \tfailures:%d \tooo:%d \tcount:%d", r.IP.String(), r.Successes, r.Failures, r.OutOfOrder, r.Count))
-				ie.Log.Info(fmt.Sprintf("main:[%s] \tmin:%s \tmax:%s \tmean:%s \tsum:%s \tPingerDuration:%s", r.IP.String(), r.Min.String(), r.Max.String(), r.Mean.String(), r.Sum.String(), r.PingerDuration.String()))
-				//ie.Log.Info(fmt.Sprintf("icmpengine main:%s \tmin:%s \tmax:%s \tmean:%s \tvariance:%s \tsum:%s \tPingerDuration:%s", r.IP.String(), r.Min.String(), r.Max.String(), r.Mean.String(), r.Variance.String(), r.Sum.String(), r.PingerDuration.String()))
-			}
-		} else {
-			pwg.Add(1)
-			go ie.PingerWithStatsChannel(destNetAddr, icmpengine.Sequence(*count), *interval, true, pDone, pwg, sCh)
-		}
+		targets = append(targets, icmpengine.Target{
+			Addr:     addr,
+			Count:    count,
+			Interval: interval,
+			Options:  []icmpengine.PingOption{icmpengine.SortRTTs()},
+		})
 	}
+	return targets, nil
+}
 
-	if !*blocking {
-		for i := range ips {
-			r := <-sCh
-			if debugLevel > 10 {
-				logger.Info(fmt.Sprintf("Received on channel count:%d\tr.mean:%s", i, r.Mean.String()))
-			}
-			if debugLevel > 10 {
-				ie.Log.Info(fmt.Sprintf("icmpengine main:%s \tsuccesses:%d \tfailures:%d \tooo:%d \tcount:%d", r.IP.String(), r.Successes, r.Failures, r.OutOfOrder, r.Count))
-				ie.Log.Info(fmt.Sprintf("icmpengine main:%s \tmin:%s \tmax:%s \tmean:%s \tsum:%s \tPingerDuration:%s", r.IP.String(), r.Min.String(), r.Max.String(), r.Mean.String(), r.Sum.String(), r.PingerDuration.String()))
-				//ie.Log.Info(fmt.Sprintf("icmpengine main:%s \tmin:%s \tmax:%s \tmean:%s \tvariance:%s \tsum:%s \tPingerDuration:%s", r.IP.String(), r.Min.String(), r.Max.String(), r.Mean.String(), r.Variance.String(), r.Sum.String(), r.PingerDuration.String()))
-			}
-			if debugLevel > 100 {
-				ie.Log.Info(fmt.Sprintf("icmpengine main:%s \tr.RTTs:", r.RTTs))
-			}
-		}
-	}
-
-	if debugLevel > 10 {
-		logger.Info("main pwg.Wait")
-	}
-	pwg.Wait()
-
-	if debugLevel > 10 {
-		logger.Info("main pwg.Wait complete.  Stopping ICMPEngine")
-	}
-
-	doneAll <- struct{}{}
-
-	if debugLevel > 100 {
-		logger.Info("main wg.Wait")
-	}
-	wg.Wait()
-
-	if debugLevel > 100 {
-		logger.Info("Completed.  Bye bye")
+// parseLevel maps a log-level string to a slog.Level.
+func parseLevel(s string) slog.Level {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
 }
