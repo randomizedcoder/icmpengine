@@ -1,0 +1,120 @@
+# .golangci.yml
+#
+# Tier 1 — Standard lint (~2 minutes). CI gating.
+#
+# Run:
+#   lint                          (inside nix develop)
+#   nix build .#checks.<system>.golangci-lint
+#
+# Policy: every exclusion below states WHY. When a linter fires, the default
+# is to fix the code, not add an exclusion.
+
+version: "2"
+
+run:
+  # Generous ceiling so a cold hermetic CI sandbox (no build cache) doesn't
+  # trip it; ~2min locally with a warm cache.
+  timeout: 10m
+  modules-download-mode: vendor
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters:
+  default: none
+  enable:
+    # Tier 0
+    - govet
+    - errcheck
+    - ineffassign
+    - unused
+    - staticcheck
+    # Tier 1 additions
+    - gosec
+    - gocritic
+    - revive
+    - noctx
+    - contextcheck
+    - durationcheck
+
+  settings:
+    errcheck:
+      # check-type-assertions / check-blank are intentionally left at their
+      # defaults: the engine relies on always-valid type assertions on its own
+      # list.Element values, and `_ =` is the idiomatic "deliberately ignored".
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        # err shadowing is idiomatic Go and the repo uses it throughout.
+        - shadow
+
+    staticcheck:
+      checks:
+        - "all"
+        - "-SA1019"
+
+    gosec:
+      excludes:
+        # G404: FakeDrop simulates ping loss with non-crypto randomness.
+        - G404
+        # G115: --count -> uint16 ICMP sequence; cmd/icmpengine bounds --count
+        #       to 0..65535 at startup, so the conversion can't overflow.
+        - G115
+
+    gocritic:
+      # Run ONLY this curated set of high-value bug-finding checks. The default
+      # gocritic style checks (commentFormatting, exitAfterDefer, underef,
+      # elseif, hugeParam) fire on legacy commented-out debug code and
+      # intentional fatal-assertion / nested-if patterns without adding value.
+      disable-all: true
+      enabled-checks:
+        - appendAssign
+        - argOrder
+        - badCond
+        - builtinShadow
+        - dupCase
+        - dupSubExpr
+        - nilValReturn
+        - rangeValCopy
+        - sliceClear
+
+    revive:
+      rules:
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: error-return
+        - name: error-strings
+        - name: increment-decrement
+        - name: var-declaration
+
+  exclusions:
+    warn-unused: true
+    rules:
+      # Test code: relax dup/funlen/gocyclo/errcheck/unused/goconst/noctx.
+      # The integration tests build large table structs and dial loopback
+      # without ctx; lifting those into constants or contextual variants
+      # adds noise without benefit.
+      - path: "_test\\.go"
+        linters:
+          - dupl
+          - funlen
+          - gocyclo
+          - errcheck
+          - unused
+          - goconst
+          - noctx
+output:
+  formats:
+    text:
+      print-issued-lines: true
+      print-linter-name: true

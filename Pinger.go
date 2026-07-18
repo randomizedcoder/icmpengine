@@ -52,7 +52,7 @@ func (ie *ICMPEngine) PingerWithStatsChannel(IP netip.Addr, packets Sequence, in
 	results := ie.Pinger(IP, packets, interval, sortRTTs, DoneCh)
 
 	if ie.Pingers.DebugLevel > 100 {
-		ie.Log.Info(fmt.Sprintf("PingerWithStatsChannel recieved results, sending on channel:\t%s", IP.String()))
+		ie.Log.Info(fmt.Sprintf("PingerWithStatsChannel received results, sending on channel:\t%s", IP.String()))
 	}
 	pingerResultsCh <- results
 
@@ -80,6 +80,9 @@ func (ie *ICMPEngine) Pinger(IP netip.Addr, packets Sequence, interval time.Dura
 //
 // https://pkg.go.dev/net/netip
 
+// PingerConfig runs a pinger for a single IP: it WriteTo-s ICMP echo requests
+// and collects RTT statistics. dropProb (>0) fakes packet loss for testing.
+//
 // Welford's math stolen from https://pkg.go.dev/github.com/eclesh/welford
 // Welford's one-pass algorithm for computing the mean and variance
 // of a set of numbers. For more information see Knuth (TAOCP Vol 2, 3rd ed, pg 232)
@@ -146,7 +149,7 @@ func (ie *ICMPEngine) PingerConfig(IP netip.Addr, packets Sequence, interval tim
 			addr = &net.UDPAddr{IP: net.IP(IP.AsSlice()), Port: 0}
 			wb, merr = msg.Marshal(nil)
 			if merr != nil {
-				log.Fatal(fmt.Sprintf("Pinger [%s] msg.Marshal(nil):%v", IP.String(), merr))
+				log.Fatalf("Pinger [%s] msg.Marshal(nil):%v", IP.String(), merr)
 			}
 		}
 
@@ -254,7 +257,7 @@ func (ie *ICMPEngine) PingerConfig(IP netip.Addr, packets Sequence, interval tim
 					ie.Log.Info(fmt.Sprintf("Pinger [%s] \ti:%d \t Seq:%d \t /%d \t RTT:%s", IP.String(), i, ps.Seq, packets, ps.RTT.String()))
 				}
 			}
-			if ps.Seq != Sequence(i) {
+			if ps.Seq != i {
 				results.OutOfOrder++
 				if ie.Pingers.DebugLevel > 10 {
 					ie.Log.Info(fmt.Sprintf("Pinger [%s] \ti:%d \t Seq:%d \t Out of order:%d", IP.String(), i, ps.Seq, results.OutOfOrder))

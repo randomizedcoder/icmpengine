@@ -43,7 +43,7 @@ func timeoutsInARowCalculator(timeoutsInARow int) (multiplier float64) {
 // tiarCalculator (Timeouts In A Row) is just a simple function to return
 // the multiplier amount based on a simple table.  Probably a tree structure
 // could be used, or a y = mX+c style function, but this will do the job
-// tiarCalculator is seperated to allow for testing
+// tiarCalculator is separated to allow for testing
 func tiarCalculator(tiar int, low int, medium int, high int, mLow float64, mMedium float64, mHigh float64) (multiplier float64) {
 	multiplier = 1
 	if tiar >= high {
@@ -84,7 +84,7 @@ func (ie *ICMPEngine) Receiver(proto Protocol, index int, allDone <-chan struct{
 	// Don't start the receivers if we're faking success
 	if fakeSuccess {
 		// return
-		log.Fatal(fmt.Sprintf("Receiver fakeSuccess:%t nothing should try to start the receivers", fakeSuccess))
+		log.Fatalf("Receiver fakeSuccess:%t nothing should try to start the receivers", fakeSuccess)
 	}
 
 	if ie.Receivers.DebugLevel > 100 {
@@ -99,9 +99,9 @@ func (ie *ICMPEngine) Receiver(proto Protocol, index int, allDone <-chan struct{
 		buffer := bufPool.Get().(*[]byte)
 
 		// We increase the timeouts when there have been a lot of timeouts in a row, to reduce thrashing on the syscall
-		var readDealLine time.Duration = time.Duration(float64(ie.ReadDeadline) * timeoutsInARowCalculator(timeoutsInARow))
+		var readDealLine = time.Duration(float64(ie.ReadDeadline) * timeoutsInARowCalculator(timeoutsInARow))
 
-		(ie.Sockets.Sockets[proto]).SetReadDeadline(time.Now().Add(readDealLine))
+		_ = (ie.Sockets.Sockets[proto]).SetReadDeadline(time.Now().Add(readDealLine))
 		if ie.Receivers.DebugLevel > 100 {
 			ie.Log.Info(fmt.Sprintf("Receiver\t proto:%d \t index:%d, ReadFrom start with timeout, i:%d \t readDealLine:%s \t keepLooping:%t \tTimeouts:%d \t timeoutsInARow:%d", proto, index, i, readDealLine.String(), keepLooping, timeouts, timeoutsInARow))
 		}
@@ -120,7 +120,7 @@ func (ie *ICMPEngine) Receiver(proto Protocol, index int, allDone <-chan struct{
 				if ie.Receivers.DebugLevel > 100 {
 					ie.Log.Info(fmt.Sprintf("Receiver\t proto:%d \t index:%d, ReadFrom actual error", proto, index))
 				}
-				log.Fatal(fmt.Sprintf("Receiver\t proto:%d \t index:%d \t err:%v", proto, index, err))
+				log.Fatalf("Receiver\t proto:%d \t index:%d \t err:%v", proto, index, err)
 			}
 		} else {
 			timeoutsInARow = 0

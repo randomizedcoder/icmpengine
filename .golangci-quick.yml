@@ -1,0 +1,69 @@
+# .golangci-quick.yml
+#
+# Tier 0 — fast feedback (~30s). Suitable for pre-commit and local iteration.
+#
+# Run:
+#   lint-quick                    (inside nix develop)
+#   nix build .#checks.<system>.golangci-lint-quick
+
+version: "2"
+
+run:
+  # Tier 0 aims for ~30s locally (warm cache); the ceiling is generous so a
+  # cold hermetic CI sandbox (no build cache) doesn't trip it.
+  timeout: 5m
+  modules-download-mode: vendor
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters:
+  default: none
+  enable:
+    - govet
+    - errcheck
+    - ineffassign
+    - unused
+    - staticcheck
+
+  settings:
+    errcheck:
+      # io.Closer / *os.File Close() are routinely unchecked; flagging them
+      # here is noise. fmt.Fprintf/Fprintln to tty/stdout/stderr can't fail
+      # in practice.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+
+    govet:
+      enable-all: true
+      disable:
+        # Struct alignment suggestions are noisy and not bugs.
+        - fieldalignment
+        # err shadowing is idiomatic Go; matches the other tier configs.
+        - shadow
+
+    staticcheck:
+      checks:
+        - "all"
+        # SA1019 = deprecated symbols. Allow during migration windows.
+        - "-SA1019"
+
+  exclusions:
+    warn-unused: true
+    rules:
+      - path: "_test\\.go"
+        linters:
+          - errcheck
+          - unused
+
+output:
+  formats:
+    text:
+      print-issued-lines: true
+      print-linter-name: true

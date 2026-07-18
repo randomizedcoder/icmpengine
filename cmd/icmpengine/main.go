@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/netip"
 	"os"
@@ -32,11 +33,11 @@ var (
 
 func main() {
 
-	dest := flag.String("dest", "127.0.0.1,::1", "Destination IPs to ping, comma seperated, e.g. 8.8.8.8,8.8.4.4")
+	dest := flag.String("dest", "127.0.0.1,::1", "Destination IPs to ping, comma separated, e.g. 8.8.8.8,8.8.4.4")
 	count := flag.Int("count", 10, "Count of icmps to send.")
 	interval := flag.Duration("interval", 10*time.Millisecond, "Interval between icmp echo request message sent.")
 	timeout := flag.Duration("timeout", 200*time.Millisecond, "Timeout to wait for arrival of a echo response message, before declaring it dropped.")
-	readDeadline := flag.Duration("readDeadline", 3*time.Second, "Receiver socket .SetReadDeadline timeout.  Essentailly, how long to wait before checking the done channel.")
+	readDeadline := flag.Duration("readDeadline", 3*time.Second, "Receiver socket .SetReadDeadline timeout.  Essentially, how long to wait before checking the done channel.")
 	r4 := flag.Int("rPP4", 2, "Receivers IPv4")
 	r6 := flag.Int("rPP6", 2, "Receivers IPv6")
 	splayReceivers := flag.Bool("splay", false, "Splay the receivers")
@@ -59,6 +60,12 @@ func main() {
 	if *version {
 		fmt.Println("monitor\ttag:", tag, "\tcommit:", commit, "\tcompile date(UTC):", date)
 		os.Exit(0)
+	}
+
+	// ICMP sequence numbers are uint16; bound the count so the conversion
+	// below can't silently wrap.
+	if *count < 0 || *count > math.MaxUint16 {
+		log.Fatalf("count must be between 0 and %d (icmp sequence is uint16)", math.MaxUint16)
 	}
 
 	logger := hclog.New(&hclog.LoggerOptions{
@@ -94,7 +101,17 @@ func main() {
 			EnableOpenMetrics: true,
 		},
 	))
-	go http.ListenAndServe(*promBind, nil)
+	// Explicit http.Server so ReadHeaderTimeout is set (an unbounded
+	// ListenAndServe is a slow-loris risk / gosec G114).
+	promSrv := &http.Server{
+		Addr:              *promBind,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		if err := promSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("prometheus http listener failed", "err", err)
+		}
+	}()
 
 	if debugLevel > 10 {
 		logger.Info("Prometheus http listener started", "*promBind", *promBind, "*promPath", *promPath)
@@ -178,7 +195,7 @@ func main() {
 		for i := range ips {
 			r := <-sCh
 			if debugLevel > 10 {
-				logger.Info(fmt.Sprintf("Recieved on channel count:%d\tr.mean:%s", i, r.Mean.String()))
+				logger.Info(fmt.Sprintf("Received on channel count:%d\tr.mean:%s", i, r.Mean.String()))
 			}
 			if debugLevel > 10 {
 				ie.Log.Info(fmt.Sprintf("icmpengine main:%s \tsuccesses:%d \tfailures:%d \tooo:%d \tcount:%d", r.IP.String(), r.Successes, r.Failures, r.OutOfOrder, r.Count))

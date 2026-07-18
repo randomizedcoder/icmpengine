@@ -46,7 +46,7 @@ func (ie *ICMPEngine) CheckExpirerIsRunning() (started bool) {
 	return started
 }
 
-// Expirer tracks the ICMP echo timeouts
+// ExpirerConfig tracks the ICMP echo timeouts
 // The idea is to just have the single and nearest timer running at any single moment
 // The "Config" implies that we can configure the FakeSuccess, which is used for testing
 func (ie *ICMPEngine) ExpirerConfig(FakeSuccess bool) {
@@ -65,7 +65,7 @@ func (ie *ICMPEngine) ExpirerConfig(FakeSuccess bool) {
 
 		var el *list.Element
 		var exists bool
-		var len int
+		var dllLen int
 		var SoonestPing Pings
 		var sleepDuration time.Duration
 
@@ -87,14 +87,13 @@ func (ie *ICMPEngine) ExpirerConfig(FakeSuccess bool) {
 			ie.Log.Info(fmt.Sprintf("Expirer trying to acquire ie.Lock() to check len\t i:%d", i))
 		}
 		ie.Lock() // <-------------------------- LOCK!!
-		len = ie.Pingers.ExpiresDLL.Len()
-		if len == 0 {
+		dllLen = ie.Pingers.ExpiresDLL.Len()
+		if dllLen == 0 {
 			ie.Expirers.Running = false
 			ie.Unlock() // <-------------------- UNLOCK!!
 			if ie.Expirers.DebugLevel > 100 {
-				ie.Log.Info(fmt.Sprintf("Expirer ie.Unlock(). No more elements in expires list, len:%d.  Returning", len))
+				ie.Log.Info(fmt.Sprintf("Expirer ie.Unlock(). No more elements in expires list, len:%d.  Returning", dllLen))
 			}
-			keepLooping = false
 			return
 		}
 
@@ -196,11 +195,11 @@ func (ie *ICMPEngine) ExpirerConfig(FakeSuccess bool) {
 	}
 	ie.Lock()
 	defer ie.Unlock()
-	len := ie.Pingers.ExpiresDLL.Len()
+	dllLen := ie.Pingers.ExpiresDLL.Len()
 	ie.Expirers.Running = false
 
 	if ie.Expirers.DebugLevel > 100 {
-		ie.Log.Info(fmt.Sprintf("Expirer len:%d ie.ExpirerRunning = false.  Expirer complete. defer ie.Unlock()", len))
+		ie.Log.Info(fmt.Sprintf("Expirer len:%d ie.ExpirerRunning = false.  Expirer complete. defer ie.Unlock()", dllLen))
 	}
 }
 
