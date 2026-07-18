@@ -52,6 +52,7 @@ type pingExpired struct {
 type pingConfig struct {
 	sortRTTs bool
 	dropProb float64
+	timeout  time.Duration // 0 = use the engine default
 }
 
 // PingOption customizes a single Ping call.
@@ -63,6 +64,12 @@ func SortRTTs() PingOption { return func(c *pingConfig) { c.sortRTTs = true } }
 // DropProbability fakes packet loss with the given probability in [0,1] by not
 // actually sending the echo request. Intended for testing only.
 func DropProbability(p float64) PingOption { return func(c *pingConfig) { c.dropProb = p } }
+
+// PingTimeout overrides the engine's default timeout for this Ping call, so
+// different destinations can wait different amounts of time before a packet is
+// counted as a failure (e.g. 10ms on a LAN, hours for an interplanetary link).
+// A zero value keeps the engine default; a negative value is rejected.
+func PingTimeout(d time.Duration) PingOption { return func(c *pingConfig) { c.timeout = d } }
 
 // Target describes one destination for PingAll.
 type Target struct {
@@ -92,6 +99,13 @@ func (e *Engine) Ping(ctx context.Context, addr netip.Addr, count int, interval 
 	for _, o := range opts {
 		o(&pc)
 	}
+	if pc.timeout < 0 {
+		return Result{}, ErrTimeoutRange
+	}
+	timeout := e.timeout
+	if pc.timeout > 0 {
+		timeout = pc.timeout
+	}
 
 	// Cancel this ping when either the caller's ctx or the engine shuts down.
 	pctx, cancel := context.WithCancel(ctx)
@@ -114,7 +128,7 @@ func (e *Engine) Ping(ctx context.Context, addr netip.Addr, count int, interval 
 		loopStart := time.Now()
 		drop := pc.dropProb > 0 && fakeDrop(pc.dropProb)
 
-		sent, serr := e.sendPacket(addr, proto, socket, i, drop)
+		sent, serr := e.sendPacket(addr, proto, socket, i, drop, timeout)
 		if serr != nil {
 			return finishResult(result, pc, startTime), serr
 		}
@@ -185,16 +199,30 @@ func (e *Engine) registerPing(addr netip.Addr, proto protocol, count int) (socke
 	return socket, successCh, expiredCh, cleanup, nil
 }
 
-// sendPacket registers echo request seq i in the expiry queue and writes it to
-// the wire (unless faking success or faking a drop). It returns false if the
-// engine has shut down and no packet was registered.
-func (e *Engine) sendPacket(addr netip.Addr, proto protocol, socket *icmp.PacketConn, i int, drop bool) (sent bool, err error) {
+// sendPacket registers echo request seq i in the expiry queue (expiring after
+// timeout) and writes it to the wire, unless faking success or a drop. It
+// returns false if the engine has shut down and no packet was registered.
+func (e *Engine) sendPacket(addr netip.Addr, proto protocol, socket *icmp.PacketConn, i int, drop bool, timeout time.Duration) (sent bool, err error) {
+	seq := sequence(i)
+
+	// Test-only simulation: when a responder is installed, the fake-success path
+	// delivers a simulated RTT after a timer rather than an instant success. A
+	// simulated reply that arrives within the timeout is a success; anything
+	// else (no response, or an RTT past the timeout) falls through to a timeout.
+	simulateSuccess, simRTT := false, time.Duration(0)
+	if e.fakeSuccess && e.responder != nil {
+		rtt, respond := e.responder(addr, seq)
+		drop = true // the expirer only ever times these out; success comes via timer
+		simulateSuccess = respond && rtt < timeout
+		simRTT = rtt
+	}
+
 	var (
 		wb  []byte
 		dst *net.UDPAddr
 	)
 	if !e.fakeSuccess && !drop {
-		wb, err = buildICMPMessage(e.pid, sequence(i), proto).Marshal(nil)
+		wb, err = buildICMPMessage(e.pid, seq, proto).Marshal(nil)
 		if err != nil {
 			return false, fmt.Errorf("icmpengine: marshal echo request: %w", err)
 		}
@@ -207,9 +235,13 @@ func (e *Engine) sendPacket(addr netip.Addr, proto protocol, socket *icmp.Packet
 		return false, nil
 	}
 	send := time.Now()
-	e.queue.push(&pending{addr: addr, seq: sequence(i), send: send, expiry: send.Add(e.timeout), fakeDrop: drop})
+	e.queue.push(&pending{addr: addr, seq: seq, send: send, expiry: send.Add(timeout), fakeDrop: drop})
 	e.ensureExpirer()
 	e.mu.Unlock()
+
+	if simulateSuccess {
+		e.scheduleFakeSuccess(addr, seq, send, simRTT)
+	}
 
 	if !e.fakeSuccess && !drop {
 		if werr := writeTo(socket, wb, dst); werr != nil {
@@ -217,6 +249,22 @@ func (e *Engine) sendPacket(addr netip.Addr, proto protocol, socket *icmp.Packet
 		}
 	}
 	return true, nil
+}
+
+// scheduleFakeSuccess (test-only, responder path) delivers a simulated success
+// after rtt of fake time, removing the pending so the expirer will not also
+// time it out. If the ping has already finished the send is dropped.
+func (e *Engine) scheduleFakeSuccess(addr netip.Addr, seq sequence, send time.Time, rtt time.Duration) {
+	time.AfterFunc(rtt, func() {
+		e.mu.Lock()
+		_, ok := e.queue.remove(addr, seq)
+		ch := e.successChs[addr]
+		e.mu.Unlock()
+		if !ok || ch == nil {
+			return
+		}
+		ch <- pingSuccess{Seq: seq, Send: send, Received: send.Add(rtt), RTT: rtt}
+	})
 }
 
 // finishResult fills in the derived fields (duration, count, sorted RTTs).
