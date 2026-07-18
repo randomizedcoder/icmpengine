@@ -4,6 +4,7 @@ go 1.26.4
 
 require (
 	github.com/go-cmd/cmd v1.4.3
+	github.com/google/btree v1.1.3
 	github.com/pkg/profile v1.7.0
 	github.com/prometheus/client_golang v1.23.2
 	golang.org/x/net v0.57.0

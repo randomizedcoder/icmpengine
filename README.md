@@ -87,6 +87,23 @@ The engine logs via `log/slog`. Pass `icmpengine.WithLogger(l)` to supply a
 `*slog.Logger`, or omit it (or pass `nil`) to disable logging entirely — there is
 no logging dependency to pull in.
 
+### Expiry backend
+
+Outstanding pings are tracked in a swappable "expiry tracker" (a priority queue
+with arbitrary removal). Two backends are built in and selectable at construction:
+
+- `icmpengine.BackendHeap` — `container/heap` min-heap (default; peek is O(1), no external dependency).
+- `icmpengine.BackendBTree` — [`github.com/google/btree`](https://github.com/google/btree) (all ops O(log n)).
+
+```go
+eng, _ := icmpengine.New(icmpengine.WithExpiryBackend(icmpengine.BackendBTree))
+```
+
+The CLI exposes this as `-backend heap|btree`. `BackendHeap` is the default: the
+`BenchmarkTracker` micro-benchmark (`go test -bench=Tracker -benchmem`) shows the
+heap out-performing btree for this workload (frequent peek-soonest + single
+insert/remove), so btree is offered as an option rather than the default.
+
 <img src="./icmpengine.png" alt="xtcp diagram" width="75%" height="75%"/>
 
 ## Nix
@@ -141,6 +158,7 @@ GitHub Actions instead.
 Dependancy                                                     | License         | Link
 ---                                                            | ---             | ---
 Golang                                                         | BSD             | https://golang.org/LICENSE
+github.com/google/btree v1.1.3                                 | Apache 2.0      | https://github.com/google/btree/blob/master/LICENSE
 github.com/go-cmd/cmd v1.4.3                                   | MIT             | https://github.com/go-cmd/cmd/blob/master/LICENSE
 github.com/pkg/profile v1.7.0                                  | BSD             | https://github.com/pkg/profile/blob/master/LICENSE
 github.com/prometheus/client_golang v1.23.2                    | Apache 2.0      | https://github.com/prometheus/client_golang/blob/master/LICENSE
@@ -150,7 +168,8 @@ The IP type is the standard library [net/netip](https://pkg.go.dev/net/netip),
 and logging is the standard library [log/slog](https://pkg.go.dev/log/slog), so
 neither `inet.af/netaddr` nor `hashicorp/go-hclog` is a dependency any more.
 
-The **library** itself only needs `golang.org/x/net`. The other modules below are
+The **library** needs only `golang.org/x/net` and `github.com/google/btree`
+(the latter tiny, with zero transitive dependencies). The remaining modules are
 used solely by the `cmd/icmpengine` CLI (profiling, Prometheus metrics, and the
 root sysctl helper), so embedding the library does not pull them in.
 
@@ -162,6 +181,7 @@ go 1.26.4
 
 require (
 	github.com/go-cmd/cmd v1.4.3
+	github.com/google/btree v1.1.3
 	github.com/pkg/profile v1.7.0
 	github.com/prometheus/client_golang v1.23.2
 	golang.org/x/net v0.57.0

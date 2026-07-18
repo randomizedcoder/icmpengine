@@ -38,6 +38,7 @@ func main() {
 	r6 := flag.Int("rPP6", 2, "Receivers IPv6")
 	splayReceivers := flag.Bool("splay", false, "Splay the receiver start times")
 	concurrency := flag.Int("concurrency", 0, "Max concurrent pingers (0 = one per destination)")
+	backend := flag.String("backend", "heap", "Expiry-tracking backend: heap or btree")
 
 	version := flag.Bool("version", false, "show version")
 	logLevel := flag.String("log", "info", "Log level: debug, info, warn, error")
@@ -60,20 +61,7 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parseLevel(*logLevel)}))
 
-	// "github.com/pkg/profile"
-	// e.g. ./icmpengine -pprof cpu ; go tool pprof -http=":8081" icmpengine cpu.pprof
-	switch *pprof {
-	case "cpu":
-		defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")).Stop()
-	case "mem":
-		defer profile.Start(profile.MemProfile, profile.ProfilePath(".")).Stop()
-	case "mutex":
-		defer profile.Start(profile.MutexProfile, profile.ProfilePath(".")).Stop()
-	case "block":
-		defer profile.Start(profile.BlockProfile, profile.ProfilePath(".")).Stop()
-	case "trace":
-		defer profile.Start(profile.TraceProfile, profile.ProfilePath(".")).Stop()
-	}
+	defer startProfiling(*pprof)()
 
 	startPrometheus(logger, *promBind, *promPath)
 
@@ -81,12 +69,19 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	expiryBackend, err := parseBackend(*backend)
+	if err != nil {
+		logger.Error("bad -backend", "err", err)
+		os.Exit(2)
+	}
+
 	eng, err := icmpengine.New(
 		icmpengine.WithLogger(logger),
 		icmpengine.WithTimeout(*timeout),
 		icmpengine.WithReadDeadline(*readDeadline),
 		icmpengine.WithReceivers(*r4, *r6),
 		icmpengine.WithSplayReceivers(*splayReceivers),
+		icmpengine.WithExpiryBackend(expiryBackend),
 	)
 	if err != nil {
 		logger.Error("creating engine", "err", err)
@@ -154,6 +149,40 @@ func parseTargets(dest string, count int, interval time.Duration) ([]icmpengine.
 		})
 	}
 	return targets, nil
+}
+
+// startProfiling begins the requested pkg/profile mode and returns a stop func
+// to defer. An empty/unknown mode is a no-op.
+// e.g. ./icmpengine -pprof cpu ; go tool pprof -http=":8081" icmpengine cpu.pprof
+func startProfiling(mode string) func() {
+	var p interface{ Stop() }
+	switch mode {
+	case "cpu":
+		p = profile.Start(profile.CPUProfile, profile.ProfilePath("."))
+	case "mem":
+		p = profile.Start(profile.MemProfile, profile.ProfilePath("."))
+	case "mutex":
+		p = profile.Start(profile.MutexProfile, profile.ProfilePath("."))
+	case "block":
+		p = profile.Start(profile.BlockProfile, profile.ProfilePath("."))
+	case "trace":
+		p = profile.Start(profile.TraceProfile, profile.ProfilePath("."))
+	default:
+		return func() {}
+	}
+	return p.Stop
+}
+
+// parseBackend maps a backend string to an icmpengine.Backend.
+func parseBackend(s string) (icmpengine.Backend, error) {
+	switch strings.ToLower(s) {
+	case "heap", "":
+		return icmpengine.BackendHeap, nil
+	case "btree":
+		return icmpengine.BackendBTree, nil
+	default:
+		return 0, fmt.Errorf("unknown backend %q (want heap or btree)", s)
+	}
 }
 
 // parseLevel maps a log-level string to a slog.Level.

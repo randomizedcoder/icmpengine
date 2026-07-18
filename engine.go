@@ -80,6 +80,7 @@ type config struct {
 	splay        bool
 	fakeSuccess  bool
 	hackSysctl   bool
+	backend      Backend
 }
 
 // Option configures an Engine created by New.
@@ -115,6 +116,10 @@ func WithFakeSuccess(b bool) Option { return func(c *config) { c.fakeSuccess = b
 // Off by default; opt in only if you understand the implication.
 func WithHackSysctl(b bool) Option { return func(c *config) { c.hackSysctl = b } }
 
+// WithExpiryBackend selects the data structure used to track outstanding pings.
+// Defaults to BackendHeap. BackendBTree uses github.com/google/btree.
+func WithExpiryBackend(b Backend) Option { return func(c *config) { c.backend = b } }
+
 // Engine sends ICMP echo requests and matches them to replies. Create one with
 // New, Start it, call Ping/PingAll, then Close it. An Engine is safe for
 // concurrent use by multiple goroutines. It implements io.Closer.
@@ -146,7 +151,7 @@ type Engine struct {
 	started     bool
 	sockets     map[protocol]*icmp.PacketConn
 	socketsOpen bool
-	queue       *expiryQueue
+	queue       expiryTracker
 	successChs  map[netip.Addr]chan pingSuccess
 	expiredChs  map[netip.Addr]chan pingExpired
 	expirerRun  bool
@@ -200,7 +205,7 @@ func New(opts ...Option) (*Engine, error) {
 		pid:          os.Getpid() & 0xffff,
 		eid:          os.Geteuid(),
 		sockets:      make(map[protocol]*icmp.PacketConn),
-		queue:        newExpiryQueue(),
+		queue:        newExpiryTracker(c.backend),
 		successChs:   make(map[netip.Addr]chan pingSuccess),
 		expiredChs:   make(map[netip.Addr]chan pingExpired),
 	}
