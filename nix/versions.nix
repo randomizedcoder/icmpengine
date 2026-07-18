@@ -62,5 +62,5 @@
   # Go vendor hash. Update by running `nix build .#icmpengine` and pasting the
   # `got:` value from the hash mismatch error. Used by every Nix check that
   # needs deps in the sandbox (see nix/lib/goModules.nix).
-  goVendorHash = "sha256-JMdl854y381oIrbM5mOWLXIjYZiE/L/RTDujDWYUoQU=";
+  goVendorHash = "sha256-eWNhhO4tUD0KP0nILZ2MQmuq61WZUAt55awrpM8rPoY=";
 }
