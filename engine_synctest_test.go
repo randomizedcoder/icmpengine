@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"math"
 	"net/netip"
 	"testing"
 	"testing/synctest"
@@ -137,6 +138,105 @@ func TestMixedFleet(t *testing.T) {
 		for i, c := range classes {
 			assertClass(t, c, results[i], count)
 		}
+	})
+}
+
+// TestManyTargetsWithLoss pings 100 destinations concurrently, each with a
+// distinct timeout spanning ~1ms to ~1h, under deterministic 30% packet loss.
+// It verifies the engine times out exactly the lost packets — at each target's
+// own timeout — while delivering the rest, all in fake time.
+func TestManyTargetsWithLoss(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			numTargets = 100
+			count      = 10
+		)
+
+		type tgt struct {
+			addr    netip.Addr
+			timeout time.Duration
+			rtt     time.Duration // simulated RTT for delivered packets (< timeout)
+		}
+		tgts := make([]tgt, numTargets)
+		idxByAddr := make(map[netip.Addr]int, numTargets)
+		for i := range tgts {
+			// Log-spaced distinct timeouts: 1ms * 1.1647^i ≈ 1ms .. ~1h.
+			to := time.Duration(float64(time.Millisecond) * math.Pow(1.1647, float64(i)))
+			tgts[i] = tgt{
+				addr:    netip.AddrFrom4([4]byte{10, 0, 0, byte(i)}),
+				timeout: to,
+				rtt:     to / 3,
+			}
+			idxByAddr[tgts[i].addr] = i
+		}
+
+		// Deterministic per-(target,seq) loss. With count=10 this drops exactly
+		// 3 of every target's 10 packets (residues 0,1,2 of (i+7*seq) mod 10),
+		// so every target has both timeouts and successes to check.
+		lost := func(i, seq int) bool { return (i+7*seq)%10 < 3 }
+
+		eng, err := icmpengine.New(
+			icmpengine.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+			icmpengine.WithFakeSuccess(true),
+		)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		eng.SetResponder(func(addr netip.Addr, seq int) (time.Duration, bool) {
+			i := idxByAddr[addr]
+			if lost(i, seq) {
+				return 0, false // dropped: must time out at this target's timeout
+			}
+			return tgts[i].rtt, true
+		})
+		ctx := context.Background()
+		if err := eng.Start(ctx); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer eng.Close()
+
+		targets := make([]icmpengine.Target, numTargets)
+		for i, g := range tgts {
+			targets[i] = icmpengine.Target{
+				Addr:     g.addr,
+				Count:    count,
+				Interval: time.Millisecond,
+				Options:  []icmpengine.PingOption{icmpengine.PingTimeout(g.timeout)},
+			}
+		}
+
+		results, err := eng.PingAll(ctx, 0, targets)
+		if err != nil {
+			t.Fatalf("PingAll: %v", err)
+		}
+
+		var totalDrops, totalOK int
+		for i, g := range tgts {
+			r := results[i]
+			wantFail := 0
+			for s := 0; s < count; s++ {
+				if lost(i, s) {
+					wantFail++
+				}
+			}
+			wantOK := count - wantFail
+			totalDrops += wantFail
+			totalOK += wantOK
+
+			if r.Failures != wantFail || r.Successes != wantOK || r.Count != count {
+				t.Errorf("target %d (timeout %s): got successes=%d failures=%d count=%d, want %d/%d/%d",
+					i, g.timeout, r.Successes, r.Failures, r.Count, wantOK, wantFail, count)
+			}
+			// Delivered packets time out at RTT exactly (fake clock); lost ones do not.
+			if wantOK > 0 && (r.Min != g.rtt || r.Max != g.rtt || r.Mean != g.rtt) {
+				t.Errorf("target %d: rtt min/mean/max = %s/%s/%s, want %s", i, r.Min, r.Max, r.Mean, g.rtt)
+			}
+		}
+		if totalDrops == 0 || totalOK == 0 {
+			t.Fatalf("degenerate loss: drops=%d delivered=%d", totalDrops, totalOK)
+		}
+		t.Logf("100 targets, distinct timeouts %s..%s: %d packets timed out, %d delivered",
+			tgts[0].timeout, tgts[numTargets-1].timeout, totalDrops, totalOK)
 	})
 }
 
