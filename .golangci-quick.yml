@@ -9,7 +9,9 @@
 version: "2"
 
 run:
-  timeout: 60s
+  # Tier 0 aims for ~30s locally (warm cache); the ceiling is generous so a
+  # cold hermetic CI sandbox (no build cache) doesn't trip it.
+  timeout: 5m
   modules-download-mode: vendor
 
 formatters:

@@ -30,6 +30,6 @@ pkgs.runCommand "icmpengine-golangci-lint-quick"
     export GOPROXY=off
     export CGO_ENABLED=0
     export GOFLAGS=-mod=vendor
-    golangci-lint run --config .golangci-quick.yml --timeout 60s ./... > $out 2>&1 \
+    golangci-lint run --config .golangci-quick.yml --timeout 5m ./... > $out 2>&1 \
       || (cat $out && exit 1)
   ''

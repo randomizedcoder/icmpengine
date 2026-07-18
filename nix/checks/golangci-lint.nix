@@ -25,6 +25,6 @@ pkgs.runCommand "icmpengine-golangci-lint"
     export HOME=$(mktemp -d)
     export CGO_ENABLED=0
     export GOFLAGS=-mod=vendor
-    golangci-lint run --config .golangci.yml --timeout 5m ./... > $out 2>&1 \
+    golangci-lint run --config .golangci.yml --timeout 10m ./... > $out 2>&1 \
       || (cat $out && exit 1)
   ''

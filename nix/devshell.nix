@@ -48,7 +48,7 @@ pkgs.mkShell {
 
         lint-quick() {
           ${versions.golangci-lint}/bin/golangci-lint run \
-            --config .golangci-quick.yml --timeout 60s ./...
+            --config .golangci-quick.yml --timeout 5m ./...
         }
 
         lint() {
