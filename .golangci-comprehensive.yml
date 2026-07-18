@@ -1,0 +1,137 @@
+# .golangci-comprehensive.yml
+#
+# Tier 2 — Comprehensive lint (~10 minutes). Nightly / on-demand.
+#
+# Surfaces complexity, duplication, allocation, and exhaustiveness findings on
+# top of Tier 1. NOT part of the default `nix flake check`; build it explicitly:
+#
+#   lint-comprehensive            (inside nix develop)
+#   nix build .#golangci-lint-comprehensive
+
+version: "2"
+
+run:
+  timeout: 15m
+  modules-download-mode: vendor
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters:
+  default: none
+  enable:
+    # Tier 0
+    - govet
+    - errcheck
+    - ineffassign
+    - unused
+    - staticcheck
+    # Tier 1
+    - gosec
+    - gocritic
+    - revive
+    - noctx
+    - contextcheck
+    - durationcheck
+    # Tier 2 additions
+    - exhaustive
+    - prealloc
+    - gocyclo
+    - funlen
+    - goconst
+    - dupl
+    - unconvert
+    - nakedret
+    - misspell
+
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+
+    staticcheck:
+      checks:
+        - "all"
+        - "-SA1019"
+
+    gosec:
+      excludes:
+        # G404: FakeDrop simulates ping loss with non-crypto randomness.
+        - G404
+        # G115: --count -> uint16 ICMP sequence; --count is bounded 0..65535.
+        - G115
+
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - appendAssign
+        - argOrder
+        - badCond
+        - builtinShadow
+        - dupCase
+        - dupSubExpr
+        - nilValReturn
+        - rangeValCopy
+        - sliceClear
+
+    revive:
+      rules:
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: error-return
+        - name: error-strings
+        - name: increment-decrement
+        - name: var-declaration
+
+    gocyclo:
+      min-complexity: 30
+
+    funlen:
+      lines: 100
+      statements: 60
+
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+
+    dupl:
+      threshold: 150
+
+    nakedret:
+      max-func-lines: 30
+
+    misspell:
+      locale: US
+
+    exhaustive:
+      default-signifies-exhaustive: true
+
+  exclusions:
+    warn-unused: true
+    rules:
+      - path: "_test\\.go"
+        linters:
+          - dupl
+          - funlen
+          - gocyclo
+          - errcheck
+          - unused
+          - goconst
+          - noctx
+output:
+  formats:
+    text:
+      print-issued-lines: true
+      print-linter-name: true

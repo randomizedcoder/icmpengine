@@ -32,6 +32,53 @@ sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 
 <img src="./icmpengine.png" alt="xtcp diagram" width="75%" height="75%"/>
 
+## Nix
+
+This repo ships a Nix flake (thin `flake.nix` orchestrator + modular `nix/`).
+
+```
+nix develop                     # dev shell (Go, golangci-lint, gopls, delve, ...)
+nix build .#icmpengine          # main binary (default variant)
+nix build .#icmpengine-debug    # keeps symbols + DWARF
+nix build .#icmpengine-stripped # smallest
+nix run   .#default -- --dest 127.0.0.1,::1 --count 5
+
+nix flake check                 # gofmt + nix-fmt + go-vet + golangci (Tier 0+1) + gosec + version smoke + race
+```
+
+Static analysis is tiered (like the reference xtcp2 flake):
+
+```
+lint-quick                      # Tier 0 golangci (~30s) — dev shell helper
+lint                            # Tier 1 golangci (~2min, CI-gating)
+lint-comprehensive              # Tier 2 golangci (~10min, non-gating)
+nix build .#golangci-lint-comprehensive   # Tier 2 as a package
+nix build .#quality-report && cat result/quality-report.md   # every tool, one report
+nix run   .#quality-report      # print the aggregated report
+```
+
+`nix flake check` gates Tier 0, Tier 1, gosec, gofmt, nix-fmt, go-vet, the
+version smoke and the race detector. Tier 2 (complexity/duplication/naming) is
+surfaced for awareness via the `quality-report` and the comprehensive package,
+but does not gate CI.
+
+OCI image (scratch-based, single binary):
+
+```
+nix build .#oci-icmpengine && ./result | docker load
+docker run --rm icmpengine:latest --version
+# runtime ping needs NET_RAW or a permissive ping_group_range:
+docker run --rm --sysctl net.ipv4.ping_group_range="0 2147483647" \
+  icmpengine:latest --dest 127.0.0.1 --count 3
+```
+
+Consumers can pull the binary via the overlay
+(`inputs.icmpengine.overlays.default` → `pkgs.icmpengine`).
+
+Note: the hermetic `nix flake check` runs only the socket-free unit tests; the
+loopback ICMP integration tests need privileges the Nix sandbox lacks and run in
+GitHub Actions instead.
+
 ## Dependency licenses
 
 Dependancy                                                     | License         | Link

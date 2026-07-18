@@ -1,6 +1,6 @@
 module github.com/randomizedcoder/icmpengine
 
-go 1.26.5
+go 1.26.4
 
 require (
 	github.com/go-cmd/cmd v1.4.3

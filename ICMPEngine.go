@@ -1,3 +1,5 @@
+// Package icmpengine sends non-privileged ICMP echo requests and receives the
+// replies concurrently, without blocking on per-packet timeouts.
 package icmpengine
 
 // This file contains the main ICMPEngine data structures
@@ -46,7 +48,7 @@ const (
 // ICMPEngine holds the object state
 // Most of this data is for tracking ICMP echo requests sent, and their expiry times
 // The double linked-list (DLL) allows tracking the next Expiry time, while allowing
-// entries to be removed efficently when a ping is recieved.
+// entries to be removed efficiently when a ping is received.
 // Leveraging https://golang.org/pkg/container/list/
 // Need to move to https://golang.org/pkg/container/heap/
 type ICMPEngine struct {
@@ -234,12 +236,12 @@ func NewFullConfig(logger hclog.Logger, done chan struct{}, timeout time.Duratio
 }
 
 // StartReceiversSplay starts the receivers, with some sanity checking
-// Splay the receiver start times, means this will essentailly offset the start time
+// Splay the receiver start times, means this will essentially offset the start time
 // of the receivers, but this slows down the startup time
 func (ie *ICMPEngine) StartReceiversSplay() {
 
 	if ie.DebugLevel > 10 {
-		ie.Log.Info(fmt.Sprintf("StartReceiversSplay"))
+		ie.Log.Info("StartReceiversSplay")
 	}
 
 	ie.RLock()
@@ -327,7 +329,7 @@ func (ie *ICMPEngine) OpenDoneChannels(fakeSuccess bool) {
 
 // Start OpenSockets and starts the Receivers, with default to splay the receiver start times
 // This isn't done on New or NewRPP, to avoid opening the sockets and
-// having the Receivers busy making recieve syscalls until ICMPEngine really needs
+// having the Receivers busy making receive syscalls until ICMPEngine really needs
 // to be running.  e.g. ICMPEngine "object" can be created once, but
 // not actually running much until Start() is called
 // This is possibly an premature optimization.

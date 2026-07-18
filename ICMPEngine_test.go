@@ -156,66 +156,7 @@ func getTests(debuglevel int) (tests []testT) {
 	return tests
 }
 
-// getLongTests returns some long duration (1s) tests
-func getLongTests(debuglevel int) (tests []testT) {
-
-	debugLevels := icmpengine.GetDebugLevels(debuglevel)
-
-	maxMedian := 20 * time.Millisecond
-	if icmpengine.IsRaceEnabled {
-		maxMedian = maxMedian * 10
-	}
-
-	tests = []testT{
-		{
-			i:           0,
-			IPs:         []string{`127.0.0.1`},
-			count:       10,
-			interval:    1 * time.Second,
-			maxMedian:   maxMedian,
-			successes:   10,
-			failures:    0,
-			expected:    true,
-			debuglevels: debugLevels,
-		},
-		{
-			i:           0,
-			IPs:         []string{`::1`},
-			count:       10,
-			interval:    1 * time.Second,
-			maxMedian:   maxMedian,
-			successes:   10,
-			failures:    0,
-			expected:    true,
-			debuglevels: debugLevels,
-		},
-		{
-			i:           0,
-			IPs:         []string{`127.0.0.1`, `::1`},
-			count:       10,
-			interval:    1 * time.Second,
-			maxMedian:   maxMedian,
-			successes:   10,
-			failures:    0,
-			expected:    true,
-			debuglevels: debugLevels,
-		},
-		{
-			i:           0,
-			IPs:         []string{`127.0.0.1`, `127.0.0.2`, `127.0.0.3`, `127.0.0.4`, `::1`},
-			count:       10,
-			interval:    1 * time.Second,
-			maxMedian:   maxMedian,
-			successes:   10,
-			failures:    0,
-			expected:    true,
-			debuglevels: debugLevels,
-		},
-	}
-	return tests
-}
-
-// getLongTests returns some long duration (1s) tests
+// getTestsFakeDrop returns the fake-drop tests table
 func getTestsFakeDrop(debuglevel int) (tests []testT) {
 
 	debugLevels := icmpengine.GetDebugLevels(debuglevel)
@@ -290,11 +231,11 @@ func compareResults(t *testing.T, logger hclog.Logger, i int, test testT, result
 
 	// Median time
 	//sort.Slice(results.RTTs, func(i, j int) bool { return results.RTTs[i] < results.RTTs[j] })
-	median := time.Duration(results.RTTs[int(len(results.RTTs)/2)])
+	median := results.RTTs[len(results.RTTs)/2]
 
 	if test.expected == true {
 		if median > test.maxMedian {
-			t.Error(fmt.Sprintf("test:%d \t IP:%s \t median:%s > test.maxMedian:%s", test.i, results.IP, median.String(), test.maxMedian.String()))
+			t.Errorf("test:%d \t IP:%s \t median:%s > test.maxMedian:%s", test.i, results.IP, median.String(), test.maxMedian.String())
 		} else {
 			logger.Info(fmt.Sprintf("test:%d \t IP:%s \t median:%s < test.maxMedian:%s = good", test.i, results.IP, median.String(), test.maxMedian.String()))
 		}
@@ -308,7 +249,7 @@ func compareResults(t *testing.T, logger hclog.Logger, i int, test testT, result
 					logger.Info(fmt.Sprintf("test:%d \t IP:%s \t results.Successes:%d != test.successes:%d, but allowMinorLoopbackPacketLossCst:%t", test.i, results.IP, results.Successes, test.successes, allowMinorLoopbackPacketLossCst))
 				}
 			} else {
-				t.Error(fmt.Sprintf("test:%d \t IP:%s \t results.Successes:%d != test.successes:%d", test.i, results.IP, results.Successes, test.successes))
+				t.Errorf("test:%d \t IP:%s \t results.Successes:%d != test.successes:%d", test.i, results.IP, results.Successes, test.successes)
 			}
 		}
 
@@ -318,12 +259,12 @@ func compareResults(t *testing.T, logger hclog.Logger, i int, test testT, result
 					logger.Info(fmt.Sprintf("test:%d \t IP:%s \t results.Failures:%d != test.failures:%d, but allowMinorLoopbackPacketLossCst:%t", test.i, results.IP, results.Failures, test.failures, allowMinorLoopbackPacketLossCst))
 				}
 			} else {
-				t.Error(fmt.Sprintf("test:%d \t IP:%s \t results.Failures:%d != test.failures:%d", test.i, results.IP, results.Failures, test.failures))
+				t.Errorf("test:%d \t IP:%s \t results.Failures:%d != test.failures:%d", test.i, results.IP, results.Failures, test.failures)
 			}
 		}
 
 		if results.OutOfOrder != 0 {
-			//t.Error(fmt.Sprintf("test:%d \t IP:%s \t OutOfOrder:%d != 0", test.i, results.IP, results.OutOfOrder))
+			//t.Errorf("test:%d \t IP:%s \t OutOfOrder:%d != 0", test.i, results.IP, results.OutOfOrder)
 			logger.Info(fmt.Sprintf("test:%d \t IP:%s \t OutOfOrder:%d != 0", test.i, results.IP, results.OutOfOrder))
 		}
 	}
@@ -335,14 +276,14 @@ func compareResults(t *testing.T, logger hclog.Logger, i int, test testT, result
 // At least for the fakeDrop=1 case, we can ensure no drops
 func compareResultsFakeDrop(t *testing.T, logger hclog.Logger, i int, test testT, results icmpengine.PingerResults) {
 
-	var fudgeFactor float64 = 0.5
+	var fudgeFactor = 0.5
 
 	if test.fakeDrop == 1 {
 		if results.Successes > 0 {
-			t.Error(fmt.Sprintf("test.fakeDrop == 1 && results.Successes:%d > 0", results.Successes))
+			t.Errorf("test.fakeDrop == 1 && results.Successes:%d > 0", results.Successes)
 		}
-		if results.Failures != int(results.Count) {
-			t.Error(fmt.Sprintf("test.fakeDrop == 1 && results.Failures:%d != int(results.Count):%d", results.Failures, int(results.Count)))
+		if results.Failures != results.Count {
+			t.Errorf("test.fakeDrop == 1 && results.Failures:%d != results.Count:%d", results.Failures, results.Count)
 		}
 	}
 
@@ -359,19 +300,19 @@ func compareResultsFakeDrop(t *testing.T, logger hclog.Logger, i int, test testT
 			expectedLow := test.count - expectedDropHigh
 
 			if results.Successes > expectedHigh {
-				t.Error(fmt.Sprintf("test:%d \t IP:%s \t results.Successes:%d > expectedHigh:%d", test.i, results.IP, results.Successes, expectedHigh))
+				t.Errorf("test:%d \t IP:%s \t results.Successes:%d > expectedHigh:%d", test.i, results.IP, results.Successes, expectedHigh)
 			}
 
 			if results.Failures > expectedDropHigh {
-				t.Error(fmt.Sprintf("test:%d \t IP:%s \t results.Failures:%d > expectedDropHigh:%d", test.i, results.IP, results.Failures, expectedDropHigh))
+				t.Errorf("test:%d \t IP:%s \t results.Failures:%d > expectedDropHigh:%d", test.i, results.IP, results.Failures, expectedDropHigh)
 			}
 
 			if results.Successes < expectedLow {
-				t.Error(fmt.Sprintf("test:%d \t IP:%s \t results.Successes:%d < expectedLow:%d", test.i, results.IP, results.Successes, expectedLow))
+				t.Errorf("test:%d \t IP:%s \t results.Successes:%d < expectedLow:%d", test.i, results.IP, results.Successes, expectedLow)
 			}
 
 			if results.Failures < expectedDropLow {
-				t.Error(fmt.Sprintf("test:%d \t IP:%s \t results.Failures:%d < expectedDropLow:%d", test.i, results.IP, results.Successes, expectedDropLow))
+				t.Errorf("test:%d \t IP:%s \t results.Failures:%d < expectedDropLow:%d", test.i, results.IP, results.Successes, expectedDropLow)
 			}
 		}
 	}
@@ -412,7 +353,7 @@ func TestPinger(t *testing.T) {
 			destNetAddr, err := netip.ParseAddr(IP)
 			if err != nil {
 				if test.expected != false {
-					t.Error(fmt.Sprintf("TestPinger test netip.ParseAddr(IP) failed:%v", err))
+					t.Errorf("TestPinger test netip.ParseAddr(IP) failed:%v", err)
 				} else {
 					continue
 				}
@@ -486,7 +427,7 @@ func TestPingerWithStatsChannel(t *testing.T) {
 			destNetAddr, err := netip.ParseAddr(IP)
 			if err != nil {
 				if test.expected != false {
-					t.Error(fmt.Sprintf("TestPingerWithStatsChannel test netip.ParseAddr(IP) failed:%v", err))
+					t.Errorf("TestPingerWithStatsChannel test netip.ParseAddr(IP) failed:%v", err)
 				} else {
 					continue
 				}
@@ -513,7 +454,7 @@ func TestPingerWithStatsChannel(t *testing.T) {
 			destNetAddr, err := netip.ParseAddr(IP)
 			if err != nil {
 				if test.expected != false {
-					t.Error(fmt.Sprintf("TestPingerWithStatsChannel test netip.ParseAddr(IP) failed:%v", err))
+					t.Errorf("TestPingerWithStatsChannel test netip.ParseAddr(IP) failed:%v", err)
 				} else {
 					continue
 				}
@@ -633,7 +574,7 @@ func TestRunStopLoop(t *testing.T) {
 // 			destNetAddr, err := netip.ParseAddr(IP)
 // 			if err != nil {
 // 				if test.expected != false {
-// 					t.Error(fmt.Sprintf("PingersShutdown test netip.ParseAddr(IP) failed:%v", err))
+// 					t.Errorf("PingersShutdown test netip.ParseAddr(IP) failed:%v", err)
 // 				} else {
 // 					continue
 // 				}
@@ -673,7 +614,7 @@ func TestRunStopLoop(t *testing.T) {
 // 			destNetAddr, err := netip.ParseAddr(IP)
 // 			if err != nil {
 // 				if test.expected != false {
-// 					t.Error(fmt.Sprintf("PingersShutdown test netip.ParseAddr(IP) failed:%v", err))
+// 					t.Errorf("PingersShutdown test netip.ParseAddr(IP) failed:%v", err)
 // 				} else {
 // 					continue
 // 				}
@@ -769,7 +710,7 @@ func TestPingerFakeDrop(t *testing.T) {
 			destNetAddr, err := netip.ParseAddr(IP)
 			if err != nil {
 				if test.expected != false {
-					t.Error(fmt.Sprintf("TestPinger test netip.ParseAddr(IP) failed:%v", err))
+					t.Errorf("TestPinger test netip.ParseAddr(IP) failed:%v", err)
 				} else {
 					continue
 				}
@@ -811,7 +752,7 @@ func TestPingerFakeSuccess(t *testing.T) {
 	readDeadlineT := 500 * time.Millisecond
 	debugLevels := icmpengine.GetDebugLevels(debugLevel)
 	start := 1
-	max := 3
+	maxIP := 3
 	count := 10
 	interval := 1 * time.Microsecond
 
@@ -824,18 +765,18 @@ func TestPingerFakeSuccess(t *testing.T) {
 
 	pDone := make(chan struct{}, 2)
 	pwg := new(sync.WaitGroup)
-	sCh := make(chan icmpengine.PingerResults, 4*(max-start))
+	sCh := make(chan icmpengine.PingerResults, 4*(maxIP-start))
 
 	i := 0
-	for a := start; a < max; a++ {
-		for b := start; b < max; b++ {
-			for c := start; c < max; c++ {
-				for d := start; d < max; d++ {
+	for a := start; a < maxIP; a++ {
+		for b := start; b < maxIP; b++ {
+			for c := start; c < maxIP; c++ {
+				for d := start; d < maxIP; d++ {
 
 					ip := fmt.Sprintf("%d.%d.%d.%d", a, b, c, d)
 					destNetAddr, err := netip.ParseAddr(ip)
 					if err != nil {
-						t.Error(fmt.Sprintf("TestPingerFakeSuccess netip.ParseAddr(IP):%s failed:%v", ip, err))
+						t.Errorf("TestPingerFakeSuccess netip.ParseAddr(IP):%s failed:%v", ip, err)
 					}
 					pwg.Add(1)
 					go ie.PingerWithStatsChannel(destNetAddr, icmpengine.Sequence(count), interval, true, pDone, pwg, sCh)
@@ -850,10 +791,10 @@ func TestPingerFakeSuccess(t *testing.T) {
 	logger.Info("\n\n$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n\n")
 
 	j := 0
-	for a := start; a < max; a++ {
-		for b := start; b < max; b++ {
-			for c := start; c < max; c++ {
-				for d := start; d < max; d++ {
+	for a := start; a < maxIP; a++ {
+		for b := start; b < maxIP; b++ {
+			for c := start; c < maxIP; c++ {
+				for d := start; d < maxIP; d++ {
 					results := <-sCh
 					if testDebugLevel > 10 {
 						logger.Info(fmt.Sprintf("TestPingerFakeSuccess:\t j:%d \t results := <-sCh \t a:%d \t b:%d \t c:%d \t d:%d", j, a, b, c, d))

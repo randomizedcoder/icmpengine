@@ -1,0 +1,6 @@
+# Nix build symlinks
+/result
+/result-*
+
+# Go build output
+/cmd/icmpengine/icmpengine

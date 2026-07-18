@@ -35,7 +35,7 @@ func (ie *ICMPEngine) OpenSockets() {
 	// Assertion - Don't open sockets if we're faking success
 	if fakeSuccess {
 		// return
-		log.Fatal(fmt.Sprintf("OpenSockets fakeSuccess:%t nothing should try to open the sockets", fakeSuccess))
+		log.Fatalf("OpenSockets fakeSuccess:%t nothing should try to open the sockets", fakeSuccess)
 	}
 
 	// Assertion - don't reopen sockets
@@ -52,7 +52,7 @@ func (ie *ICMPEngine) OpenSockets() {
 
 	if ie.Sockets.Open {
 		if ie.Sockets.DebugLevel > 10 {
-			ie.Log.Info("OpenSockets ie.Sockets.Open sockets are already open wih ie.Lock()")
+			ie.Log.Info("OpenSockets ie.Sockets.Open sockets are already open with ie.Lock()")
 		}
 		return
 	}
@@ -66,7 +66,7 @@ func (ie *ICMPEngine) OpenSockets() {
 
 				}
 				//return
-				log.Fatal(fmt.Sprintf("OpenSockets ie.Sockets.Opens[%d] sockets are already open. ??!", p))
+				log.Fatalf("OpenSockets ie.Sockets.Opens[%d] sockets are already open. ??!", p)
 			}
 			var sockErr error
 			ie.Sockets.Sockets[p], sockErr = icmp.ListenPacket(ie.Sockets.Networks[p], ie.Sockets.Addresses[p])
@@ -88,7 +88,7 @@ func (ie *ICMPEngine) OpenSockets() {
 
 	// Assertion
 	if sockets != len(ie.Protocols) {
-		log.Fatal(fmt.Sprintf("OpenSockets() failed to open both IPv4 and IPv6 sockets. !! sockets:%d", sockets))
+		log.Fatalf("OpenSockets() failed to open both IPv4 and IPv6 sockets. !! sockets:%d", sockets)
 	}
 	ie.Sockets.Open = true
 
@@ -97,7 +97,7 @@ func (ie *ICMPEngine) OpenSockets() {
 	}
 }
 
-// CloseSockets() closes the sockets with some assertion checks
+// CloseSockets closes the sockets with some assertion checks
 func (ie *ICMPEngine) CloseSockets() {
 
 	if ie.Sockets.DebugLevel > 10 {
@@ -113,14 +113,14 @@ func (ie *ICMPEngine) CloseSockets() {
 
 	var sockets int
 	for _, p := range ie.Protocols {
-		(*ie.Sockets.Sockets[p]).Close()
+		_ = (*ie.Sockets.Sockets[p]).Close()
 		delete(ie.Sockets.Sockets, p)
 		ie.Sockets.Opens[p] = false
 		sockets++
 	}
 	// Assertion
 	if sockets != len(ie.Protocols) {
-		log.Fatal(fmt.Sprintf("Shutdown() closing failed to close both IPv4 and IPv6 sockets. !! sockets:%d", sockets))
+		log.Fatalf("Shutdown() closing failed to close both IPv4 and IPv6 sockets. !! sockets:%d", sockets)
 	}
 	ie.Sockets.Open = false
 
