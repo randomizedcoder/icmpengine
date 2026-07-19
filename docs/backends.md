@@ -129,5 +129,20 @@ same ordering: dary8 < pairing < heap < btree < wheel < radix.
   but at the fleet sizes icmpengine runs, **cache behavior and constant factors
   decide it, not asymptotics** — which is why the flat array heaps win.
 
+## Adding a backend: switch vs dispatch table
+
+Selecting a backend goes through small `switch` statements (`newExpiryTracker`,
+`Backend.String`, the CLI's `parseBackend`). These are cold paths — run once per
+engine / at startup — and the per-packet hot path already dispatches through the
+`expiryTracker` interface, so the switches never touch the fast path.
+
+If you wonder whether growing that list should turn the switches into map/slice
+dispatch tables, `dispatch_bench_test.go` measures it: a dense-integer switch (like
+`Backend`) compiles to a jump table — O(1), as fast as a slice and faster than a
+map, and it does not degrade as cases grow; a string switch beats a `map[string]`
+until there are many more cases. So keep the switches; only reconsider a **string**
+switch once it reaches dozens of cases.
+
+
 See [benchmarking.md](./benchmarking.md) for the workloads, the fan-out sweep, the
 full per-size tables, and how to reproduce.
