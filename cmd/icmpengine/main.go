@@ -39,6 +39,9 @@ func main() {
 	splayReceivers := flag.Bool("splay", false, "Splay the receiver start times")
 	concurrency := flag.Int("concurrency", 0, "Max concurrent pingers (0 = one per destination)")
 	backend := flag.String("backend", "dary", "Expiry-tracking backend: heap, btree, dary, radix, pairing or wheel")
+	size := flag.Int("size", 0, "ICMP payload size in bytes appended after the 8-byte header (like ping -s)")
+	dscp := flag.Int("dscp", 0, "DSCP class 0-63 to mark echo requests (IPv4 ToS / IPv6 Traffic Class)")
+	ttl := flag.Int("ttl", 64, "IPv4 TTL / IPv6 hop limit for echo requests (1-255; 0 = kernel default)")
 
 	version := flag.Bool("version", false, "show version")
 	logLevel := flag.String("log", "info", "Log level: debug, info, warn, error")
@@ -82,6 +85,8 @@ func main() {
 		icmpengine.WithReceivers(*r4, *r6),
 		icmpengine.WithSplayReceivers(*splayReceivers),
 		icmpengine.WithExpiryBackend(expiryBackend),
+		icmpengine.WithDSCP(*dscp),
+		icmpengine.WithTTL(*ttl),
 	)
 	if err != nil {
 		logger.Error("creating engine", "err", err)
@@ -97,7 +102,7 @@ func main() {
 		}
 	}()
 
-	targets, err := parseTargets(*dest, *count, *interval)
+	targets, err := parseTargets(*dest, *count, *interval, *size)
 	if err != nil {
 		logger.Error("bad destination", "err", err)
 		os.Exit(1)
@@ -134,7 +139,7 @@ func startPrometheus(logger *slog.Logger, bind, path string) {
 }
 
 // parseTargets builds the PingAll target list from a comma-separated dest list.
-func parseTargets(dest string, count int, interval time.Duration) ([]icmpengine.Target, error) {
+func parseTargets(dest string, count int, interval time.Duration, size int) ([]icmpengine.Target, error) {
 	var targets []icmpengine.Target
 	for ip := range strings.SplitSeq(dest, ",") {
 		addr, err := netip.ParseAddr(strings.TrimSpace(ip))
@@ -145,7 +150,7 @@ func parseTargets(dest string, count int, interval time.Duration) ([]icmpengine.
 			Addr:     addr,
 			Count:    count,
 			Interval: interval,
-			Options:  []icmpengine.PingOption{icmpengine.SortRTTs()},
+			Options:  []icmpengine.PingOption{icmpengine.SortRTTs(), icmpengine.PayloadSize(size)},
 		})
 	}
 	return targets, nil

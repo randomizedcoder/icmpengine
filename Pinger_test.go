@@ -63,30 +63,53 @@ func TestBuildICMPMessage(t *testing.T) {
 
 	const id = 0x1234
 	const seq = sequence(0x00ab)
+	// The 8-byte ICMP header precedes any payload, so a payloadSize of n
+	// marshals to 8+n bytes on the wire.
+	const icmpHeaderLen = 8
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			msg := buildICMPMessage(id, seq, tt.proto)
+		for _, payloadSize := range []int{0, 56, 1000} {
+			t.Run(tt.name, func(t *testing.T) {
+				msg := buildICMPMessage(id, seq, tt.proto, payloadSize)
 
-			wb, err := msg.Marshal(nil)
-			if err != nil {
-				t.Fatalf("msg.Marshal(nil) err = %v", err)
-			}
+				wb, err := msg.Marshal(nil)
+				if err != nil {
+					t.Fatalf("msg.Marshal(nil) err = %v", err)
+				}
+				if want := icmpHeaderLen + payloadSize; len(wb) != want {
+					t.Errorf("marshaled len = %d, want %d (payloadSize=%d)", len(wb), want, payloadSize)
+				}
 
-			reply, err := ParseICMPEchoReply(wb)
-			if err != nil {
-				t.Fatalf("ParseICMPEchoReply err = %v", err)
+				reply, err := ParseICMPEchoReply(wb)
+				if err != nil {
+					t.Fatalf("ParseICMPEchoReply err = %v", err)
+				}
+				if reply.Type != tt.wantType {
+					t.Errorf("Type = %d, want %d", reply.Type, tt.wantType)
+				}
+				if reply.Identifier != id {
+					t.Errorf("Identifier = %#x, want %#x", reply.Identifier, id)
+				}
+				if reply.Seq != uint16(seq) {
+					t.Errorf("Seq = %#x, want %#x", reply.Seq, uint16(seq))
+				}
+			})
+		}
+	}
+}
+
+// TestMakePayload checks the payload length and its 0x00..0xff fill pattern.
+func TestMakePayload(t *testing.T) {
+	for _, n := range []int{0, 1, 255, 256, 300} {
+		b := makePayload(n)
+		if len(b) != n {
+			t.Fatalf("makePayload(%d) len = %d, want %d", n, len(b), n)
+		}
+		for i := range b {
+			if b[i] != byte(i) {
+				t.Errorf("makePayload(%d)[%d] = %#x, want %#x", n, i, b[i], byte(i))
 			}
-			if reply.Type != tt.wantType {
-				t.Errorf("Type = %d, want %d", reply.Type, tt.wantType)
-			}
-			if reply.Identifier != id {
-				t.Errorf("Identifier = %#x, want %#x", reply.Identifier, id)
-			}
-			if reply.Seq != uint16(seq) {
-				t.Errorf("Seq = %#x, want %#x", reply.Seq, uint16(seq))
-			}
-		})
+		}
 	}
 }
 

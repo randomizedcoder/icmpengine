@@ -50,9 +50,10 @@ type pingExpired struct {
 
 // pingConfig holds the per-call options assembled from PingOption values.
 type pingConfig struct {
-	sortRTTs bool
-	dropProb float64
-	timeout  time.Duration // 0 = use the engine default
+	sortRTTs    bool
+	dropProb    float64
+	timeout     time.Duration // 0 = use the engine default
+	payloadSize int           // ICMP data bytes after the 8-byte header
 }
 
 // PingOption customizes a single Ping call.
@@ -70,6 +71,12 @@ func DropProbability(p float64) PingOption { return func(c *pingConfig) { c.drop
 // counted as a failure (e.g. 10ms on a LAN, hours for an interplanetary link).
 // A zero value keeps the engine default; a negative value is rejected.
 func PingTimeout(d time.Duration) PingOption { return func(c *pingConfig) { c.timeout = d } }
+
+// PayloadSize sets the number of ICMP data bytes appended after the 8-byte ICMP
+// header, like ping's -s option (so PayloadSize(56) yields a 64-byte ICMP
+// message). The kernel adds the IP header on top. A value of 0 (the default)
+// sends a bare echo request. Values outside [0, 65500] are rejected by Ping.
+func PayloadSize(n int) PingOption { return func(c *pingConfig) { c.payloadSize = n } }
 
 // Target describes one destination for PingAll.
 type Target struct {
@@ -102,6 +109,9 @@ func (e *Engine) Ping(ctx context.Context, addr netip.Addr, count int, interval 
 	if pc.timeout < 0 {
 		return Result{}, ErrTimeoutRange
 	}
+	if pc.payloadSize < 0 || pc.payloadSize > maxPayloadSize {
+		return Result{}, ErrPayloadSizeRange
+	}
 	timeout := e.timeout
 	if pc.timeout > 0 {
 		timeout = pc.timeout
@@ -128,7 +138,7 @@ func (e *Engine) Ping(ctx context.Context, addr netip.Addr, count int, interval 
 		loopStart := time.Now()
 		drop := pc.dropProb > 0 && fakeDrop(pc.dropProb)
 
-		sent, serr := e.sendPacket(addr, proto, socket, i, drop, timeout)
+		sent, serr := e.sendPacket(addr, proto, socket, i, drop, timeout, pc.payloadSize)
 		if serr != nil {
 			return finishResult(result, pc, startTime), serr
 		}
@@ -202,7 +212,7 @@ func (e *Engine) registerPing(addr netip.Addr, proto protocol, count int) (socke
 // sendPacket registers echo request seq i in the expiry queue (expiring after
 // timeout) and writes it to the wire, unless faking success or a drop. It
 // returns false if the engine has shut down and no packet was registered.
-func (e *Engine) sendPacket(addr netip.Addr, proto protocol, socket *icmp.PacketConn, i int, drop bool, timeout time.Duration) (sent bool, err error) {
+func (e *Engine) sendPacket(addr netip.Addr, proto protocol, socket *icmp.PacketConn, i int, drop bool, timeout time.Duration, payloadSize int) (sent bool, err error) {
 	seq := sequence(i)
 
 	// Test-only simulation: when a responder is installed, the fake-success path
@@ -222,7 +232,7 @@ func (e *Engine) sendPacket(addr netip.Addr, proto protocol, socket *icmp.Packet
 		dst *net.UDPAddr
 	)
 	if !e.fakeSuccess && !drop {
-		wb, err = buildICMPMessage(e.pid, seq, proto).Marshal(nil)
+		wb, err = buildICMPMessage(e.pid, seq, proto, payloadSize).Marshal(nil)
 		if err != nil {
 			return false, fmt.Errorf("icmpengine: marshal echo request: %w", err)
 		}
@@ -372,11 +382,25 @@ func writeTo(socket *icmp.PacketConn, wb []byte, dst *net.UDPAddr) error {
 	return nil
 }
 
-// buildICMPMessage builds the icmp.Echo request for the given protocol.
-func buildICMPMessage(id int, seq sequence, proto protocol) *icmp.Message {
+// buildICMPMessage builds the icmp.Echo request for the given protocol. When
+// payloadSize > 0 it appends that many data bytes after the 8-byte ICMP header.
+func buildICMPMessage(id int, seq sequence, proto protocol, payloadSize int) *icmp.Message {
 	body := &icmp.Echo{ID: id, Seq: int(seq)}
+	if payloadSize > 0 {
+		body.Data = makePayload(payloadSize)
+	}
 	if proto == proto4 {
 		return &icmp.Message{Type: ipv4.ICMPTypeEcho, Code: 0, Body: body}
 	}
 	return &icmp.Message{Type: ipv6.ICMPTypeEchoRequest, Code: 0, Body: body}
+}
+
+// makePayload returns n data bytes filled with a repeating 0x00..0xff pattern,
+// mirroring how iputils ping fills its echo payload.
+func makePayload(n int) []byte {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = byte(i)
+	}
+	return b
 }

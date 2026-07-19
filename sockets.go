@@ -10,6 +10,41 @@ import (
 	"golang.org/x/net/icmp"
 )
 
+// configureSocket applies the per-socket IP options the engine sets once, at
+// open time: DSCP marking and TTL / hop limit. IPv4 exposes both only as
+// persistent socket-level options, so they are set here rather than per packet.
+func configureSocket(sock *icmp.PacketConn, p protocol, dscp, ttl int) error {
+	if err := applyDSCP(sock, p, dscp); err != nil {
+		return err
+	}
+	return applyTTL(sock, p, ttl)
+}
+
+// applyDSCP writes the 6-bit DSCP value into the socket's IPv4 ToS / IPv6
+// Traffic Class byte (as dscp<<2). It is a no-op when dscp is 0.
+func applyDSCP(sock *icmp.PacketConn, p protocol, dscp int) error {
+	if dscp == 0 {
+		return nil
+	}
+	tos := dscp << 2
+	if p == proto4 {
+		return sock.IPv4PacketConn().SetTOS(tos)
+	}
+	return sock.IPv6PacketConn().SetTrafficClass(tos)
+}
+
+// applyTTL sets the outgoing IPv4 TTL / IPv6 hop limit. It is a no-op when ttl
+// is <= 0 (keep the kernel default).
+func applyTTL(sock *icmp.PacketConn, p protocol, ttl int) error {
+	if ttl <= 0 {
+		return nil
+	}
+	if p == proto4 {
+		return sock.IPv4PacketConn().SetTTL(ttl)
+	}
+	return sock.IPv6PacketConn().SetHopLimit(ttl)
+}
+
 // networkForProtocol / addressForProtocol give the icmp.ListenPacket arguments.
 func networkForProtocol(p protocol) (network, address string) {
 	if p == proto4 {
@@ -55,6 +90,16 @@ func (e *Engine) openSockets() error {
 				}
 			}
 			return fmt.Errorf("icmpengine: opening %s socket: %w (hint: sudo sysctl -w net.ipv4.ping_group_range=\"0 2147483647\")", network, listenErr)
+		}
+		if err := configureSocket(sock, p, e.dscp, e.ttl); err != nil {
+			_ = sock.Close()
+			for _, op := range e.protocols {
+				if s, ok := e.sockets[op]; ok {
+					_ = s.Close()
+					delete(e.sockets, op)
+				}
+			}
+			return fmt.Errorf("icmpengine: configuring %s socket: %w", network, err)
 		}
 		e.sockets[p] = sock
 	}

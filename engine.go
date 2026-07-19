@@ -49,10 +49,32 @@ var (
 	ErrInvalidAddr = errors.New("icmpengine: invalid destination address")
 	// ErrTimeoutRange is returned by Ping when a PingTimeout value is negative.
 	ErrTimeoutRange = errors.New("icmpengine: ping timeout must be >= 0")
+	// ErrPayloadSizeRange is returned by Ping when a PayloadSize value is
+	// outside [0, maxPayloadSize].
+	ErrPayloadSizeRange = errors.New("icmpengine: payload size out of range [0,65500]")
+	// ErrDSCPRange is returned by Ping when a DSCP value is outside [0, 63].
+	ErrDSCPRange = errors.New("icmpengine: dscp out of range [0,63]")
+	// ErrTTLRange is returned by New when a WithTTL value is outside [0, 255]
+	// (0 means keep the kernel default).
+	ErrTTLRange = errors.New("icmpengine: ttl out of range [0,255]")
 )
 
 // maxSequence is the largest ICMP sequence number (16 bits).
 const maxSequence = 1<<16 - 1
+
+// maxDSCP is the largest 6-bit DSCP value.
+const maxDSCP = 63
+
+// maxPayloadSize caps the ICMP echo payload (data bytes after the 8-byte ICMP
+// header). It sits just below the IPv4 ICMP data ceiling (65535 - 20 IP header
+// - 8 ICMP header = 65507); real paths fragment long before this.
+const maxPayloadSize = 65500
+
+// maxTTL is the largest IPv4 TTL / IPv6 hop limit (both are 8-bit fields).
+const maxTTL = 255
+
+// defaultTTL matches the Linux ping / kernel default outgoing TTL.
+const defaultTTL = 64
 
 // Internal defaults, previously exported *Cst constants.
 const (
@@ -83,6 +105,8 @@ type config struct {
 	fakeSuccess  bool
 	hackSysctl   bool
 	backend      Backend
+	dscp         int
+	ttl          int
 }
 
 // Option configures an Engine created by New.
@@ -122,6 +146,22 @@ func WithHackSysctl(b bool) Option { return func(c *config) { c.hackSysctl = b }
 // Defaults to BackendDaryHeap (the fastest in benchmarks); see docs/backends.md.
 func WithExpiryBackend(b Backend) Option { return func(c *config) { c.backend = b } }
 
+// WithDSCP marks every echo request sent by this engine with the given 6-bit
+// DiffServ code point (0-63). It is written into the IPv4 ToS / IPv6 Traffic
+// Class byte as v<<2 (the low two ECN bits stay zero) and applied once, at Start,
+// to both the IPv4 and IPv6 socket. It is engine-wide rather than per-ping
+// because the engine shares one socket per family across all concurrent pings.
+// Defaults to 0 (unmarked). Values outside [0, 63] are rejected by New.
+func WithDSCP(v int) Option { return func(c *config) { c.dscp = v } }
+
+// WithTTL sets the outgoing IPv4 TTL (and the equivalent IPv6 hop limit) for
+// every echo request sent by this engine. It is applied once, at Start, to both
+// sockets — engine-wide rather than per-ping for the same reason as WithDSCP.
+// Defaults to 64 (the Linux ping / kernel default); a value of 0 keeps the
+// kernel default without setting the option. Values outside [0, 255] are
+// rejected by New.
+func WithTTL(n int) Option { return func(c *config) { c.ttl = n } }
+
 // Engine sends ICMP echo requests and matches them to replies. Create one with
 // New, Start it, call Ping/PingAll, then Close it. An Engine is safe for
 // concurrent use by multiple goroutines. It implements io.Closer.
@@ -134,6 +174,8 @@ type Engine struct {
 	splay        bool
 	fakeSuccess  bool
 	hackSysctl   bool
+	dscp         int
+	ttl          int
 	pid          int
 	eid          int
 
@@ -183,6 +225,7 @@ func New(opts ...Option) (*Engine, error) {
 		receivers4:   defaultReceivers4,
 		receivers6:   defaultReceivers6,
 		backend:      BackendDaryHeap, // fastest across the benchmarks; see docs/backends.md
+		ttl:          defaultTTL,      // matches the Linux ping / kernel default
 	}
 	for _, o := range opts {
 		o(&c)
@@ -200,6 +243,12 @@ func New(opts ...Option) (*Engine, error) {
 	if !c.fakeSuccess && c.receivers4+c.receivers6 < 1 {
 		return nil, errors.New("icmpengine: at least one receiver is required")
 	}
+	if c.dscp < 0 || c.dscp > maxDSCP {
+		return nil, ErrDSCPRange
+	}
+	if c.ttl < 0 || c.ttl > maxTTL {
+		return nil, ErrTTLRange
+	}
 
 	e := &Engine{
 		logger:       loggerOrDiscard(c.logger),
@@ -210,6 +259,8 @@ func New(opts ...Option) (*Engine, error) {
 		splay:        c.splay,
 		fakeSuccess:  c.fakeSuccess,
 		hackSysctl:   c.hackSysctl,
+		dscp:         c.dscp,
+		ttl:          c.ttl,
 		pid:          os.Getpid() & 0xffff,
 		eid:          os.Geteuid(),
 		sockets:      make(map[protocol]*icmp.PacketConn),
