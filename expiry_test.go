@@ -1,6 +1,7 @@
 package icmpengine
 
 import (
+	"math/rand/v2"
 	"net/netip"
 	"testing"
 	"time"
@@ -19,8 +20,10 @@ func newPending(addr netip.Addr, seq sequence, expiry time.Time) *pending {
 }
 
 // trackerBackends is every runtime-selectable expiry backend. The correctness
-// tests below run against all of them so heap and btree stay in lockstep.
-var trackerBackends = []Backend{BackendHeap, BackendBTree}
+// tests below run against all of them so every structure stays in lockstep.
+var trackerBackends = []Backend{
+	BackendHeap, BackendBTree, BackendDaryHeap, BackendRadix, BackendPairing, BackendTimingWheel,
+}
 
 // forEachBackend runs fn against a fresh tracker for every backend, as subtests.
 func forEachBackend(t *testing.T, fn func(t *testing.T, q expiryTracker)) {
@@ -136,6 +139,87 @@ func TestTrackerDeleteAddr(t *testing.T) {
 		// deleteAddr on an unknown address is a no-op.
 		q.deleteAddr(mustAddr("10.0.0.1"))
 	})
+}
+
+// TestTrackerDifferential races each backend against a trusted reference heap
+// over thousands of random push/remove/deleteAddr operations with heterogeneous
+// expiries, asserting that len() and the exact peek() expiry agree at every step.
+// This is the real safety net for the intricate radix and wheel backends.
+func TestTrackerDifferential(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	type key struct {
+		addr netip.Addr
+		seq  sequence
+	}
+
+	for _, b := range trackerBackends {
+		t.Run(b.String(), func(t *testing.T) {
+			rng := rand.New(rand.NewPCG(0x1234, 0x5678))
+			ref := newHeapExpiry()
+			got := newExpiryTracker(b)
+			live := make(map[key]bool)
+			var liveList []key
+
+			clone := func(p *pending) *pending { c := *p; return &c }
+			pruneAddr := func(a netip.Addr) {
+				out := liveList[:0]
+				for _, k := range liveList {
+					if k.addr == a {
+						delete(live, k)
+					} else {
+						out = append(out, k)
+					}
+				}
+				liveList = out
+			}
+
+			for i := 0; i < 8000; i++ {
+				op := rng.IntN(4)
+				if len(liveList) == 0 {
+					op = 0 // must push when empty
+				}
+				switch op {
+				case 0, 1: // push (bias toward growth); overwrite if key already live
+					addr := netip.AddrFrom4([4]byte{10, 0, byte(rng.IntN(6)), byte(rng.IntN(6))})
+					seq := sequence(rng.IntN(12))
+					exp := base.Add(time.Duration(rng.Int64N(int64(2 * time.Hour))))
+					p := &pending{addr: addr, seq: seq, send: base, expiry: exp}
+					ref.push(clone(p))
+					got.push(clone(p))
+					k := key{addr, seq}
+					if !live[k] {
+						live[k] = true
+						liveList = append(liveList, k)
+					}
+				case 2: // remove a random live key
+					idx := rng.IntN(len(liveList))
+					k := liveList[idx]
+					ref.remove(k.addr, k.seq)
+					got.remove(k.addr, k.seq)
+					delete(live, k)
+					liveList[idx] = liveList[len(liveList)-1]
+					liveList = liveList[:len(liveList)-1]
+				case 3: // deleteAddr of a random live addr
+					a := liveList[rng.IntN(len(liveList))].addr
+					ref.deleteAddr(a)
+					got.deleteAddr(a)
+					pruneAddr(a)
+				}
+
+				if got.len() != ref.len() {
+					t.Fatalf("op %d: len = %d, want %d", i, got.len(), ref.len())
+				}
+				rp, rok := ref.peek()
+				gp, gok := got.peek()
+				if rok != gok {
+					t.Fatalf("op %d: peek ok = %t, want %t (len %d)", i, gok, rok, ref.len())
+				}
+				if rok && !gp.expiry.Equal(rp.expiry) {
+					t.Fatalf("op %d: peek expiry = %s, want %s", i, gp.expiry, rp.expiry)
+				}
+			}
+		})
+	}
 }
 
 // TestTrackerPushDuplicate verifies a re-pushed (addr,seq) overwrites cleanly.

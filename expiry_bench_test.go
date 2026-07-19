@@ -80,14 +80,27 @@ func (t *listExpiry) len() int { return t.l.Len() }
 
 // benchBackends is the set compared by BenchmarkTracker: the two runtime
 // backends plus the list baseline.
-var benchBackends = []struct {
+type benchBackend struct {
 	name string
 	make func() expiryTracker
-}{
+}
+
+// exactBackends are the runtime-selectable trackers (all correct for
+// heterogeneous expiries). The list baseline is monotonic-only, appended for the
+// uniform workload only.
+var exactBackends = []benchBackend{
 	{"heap", func() expiryTracker { return newHeapExpiry() }},
 	{"btree", func() expiryTracker { return newBTreeExpiry() }},
-	{"list", func() expiryTracker { return newListExpiry() }},
+	{"dary8", func() expiryTracker { return newDaryExpiry(daryFanout) }},
+	{"radix", func() expiryTracker { return newRadixExpiry() }},
+	{"pairing", func() expiryTracker { return newPairingExpiry() }},
+	{"wheel", func() expiryTracker { return newWheelExpiry() }},
 }
+
+var benchBackends = append(append([]benchBackend{}, exactBackends...),
+	benchBackend{"list", func() expiryTracker { return newListExpiry() }})
+
+var mixedBackends = exactBackends
 
 func makeBenchAddrs(n int) []netip.Addr {
 	addrs := make([]netip.Addr, n)
@@ -147,41 +160,54 @@ func benchUniform(b *testing.B) {
 	}
 }
 
-// mixedBackends excludes the list baseline (invalid under heterogeneous expiry).
-var mixedBackends = benchBackends[:2] // heap, btree
-
 func benchMixed(b *testing.B) {
 	sizes := []int{100, 1000, 10000, 100000}
-	base := time.Unix(1_700_000_000, 0)
-
 	for _, bk := range mixedBackends {
 		for _, n := range sizes {
 			b.Run(fmt.Sprintf("%s/N=%d", bk.name, n), func(b *testing.B) {
-				addrs := makeBenchAddrs(n)
-				seqs := make([]sequence, n)
-				q := bk.make()
-				// Deterministic per (backend,N) so every backend sees identical
-				// expiry sequences — an apples-to-apples comparison.
-				rng := rand.New(rand.NewPCG(0x9e3779b97f4a7c15, uint64(n)))
+				runMixed(b, bk.make, n)
+			})
+		}
+	}
+}
 
-				// Half of each set is a long-resident "interplanetary" tail that
-				// never churns; the rest are near-term and constantly replaced.
-				resident := n / 2
-				for i := 0; i < n; i++ {
-					q.push(&pending{addr: addrs[i], send: base, expiry: base.Add(mixedExpiry(rng, i < resident))})
-				}
+// runMixed drives the mixed churn workload against one tracker at size n.
+func runMixed(b *testing.B, newTracker func() expiryTracker, n int) {
+	base := time.Unix(1_700_000_000, 0)
+	addrs := makeBenchAddrs(n)
+	seqs := make([]sequence, n)
+	q := newTracker()
+	// Deterministic per size so every backend sees identical expiry sequences.
+	rng := rand.New(rand.NewPCG(0x9e3779b97f4a7c15, uint64(n)))
 
-				churn := n - resident
-				b.ReportAllocs()
-				i := 0
-				for b.Loop() {
-					idx := resident + i%churn       // round-robin the near tail
-					q.remove(addrs[idx], seqs[idx]) // reply arrives out of expiry order
-					seqs[idx]++
-					q.push(&pending{addr: addrs[idx], seq: seqs[idx], send: base, expiry: base.Add(mixedExpiry(rng, false))})
-					q.peek() // expirer reads the soonest
-					i++
-				}
+	// Half of each set is a long-resident "interplanetary" tail that never
+	// churns; the rest are near-term and constantly replaced.
+	resident := n / 2
+	for i := 0; i < n; i++ {
+		q.push(&pending{addr: addrs[i], send: base, expiry: base.Add(mixedExpiry(rng, i < resident))})
+	}
+
+	churn := n - resident
+	b.ReportAllocs()
+	i := 0
+	for b.Loop() {
+		idx := resident + i%churn       // round-robin the near tail
+		q.remove(addrs[idx], seqs[idx]) // reply arrives out of expiry order
+		seqs[idx]++
+		q.push(&pending{addr: addrs[idx], seq: seqs[idx], send: base, expiry: base.Add(mixedExpiry(rng, false))})
+		q.peek() // expirer reads the soonest
+		i++
+	}
+}
+
+// BenchmarkDaryFanout sweeps the d-ary heap fan-out under the mixed workload to
+// justify the fan-out chosen for BackendDaryHeap.
+func BenchmarkDaryFanout(b *testing.B) {
+	for _, d := range []int{2, 4, 8, 16} {
+		for _, n := range []int{1000, 100000} {
+			d, n := d, n
+			b.Run(fmt.Sprintf("d=%d/N=%d", d, n), func(b *testing.B) {
+				runMixed(b, func() expiryTracker { return newDaryExpiry(d) }, n)
 			})
 		}
 	}

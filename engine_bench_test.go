@@ -31,6 +31,10 @@ func BenchmarkEngineFleet(b *testing.B) {
 	}{
 		{"heap", icmpengine.WithExpiryBackend(icmpengine.BackendHeap)},
 		{"btree", icmpengine.WithExpiryBackend(icmpengine.BackendBTree)},
+		{"dary8", icmpengine.WithExpiryBackend(icmpengine.BackendDaryHeap)},
+		{"radix", icmpengine.WithExpiryBackend(icmpengine.BackendRadix)},
+		{"pairing", icmpengine.WithExpiryBackend(icmpengine.BackendPairing)},
+		{"wheel", icmpengine.WithExpiryBackend(icmpengine.BackendTimingWheel)},
 	}
 	sizes := []int{100, 1000}
 	const count = 5
