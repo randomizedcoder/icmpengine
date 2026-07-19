@@ -103,7 +103,7 @@ The timeout machinery is covered by deterministic `testing/synctest` tests that
 exercise the full range (LAN microseconds → Mars-rover hours) in fake time, so a
 3-hour timeout test runs in microseconds.
 
-### Packet size, DSCP and TTL
+### Packet size, DSCP, TTL, source address and Don't-Fragment
 
 **Payload size** is a per-ping option. `PayloadSize(n)` appends `n` data bytes
 after the 8-byte ICMP header — the same semantics as `ping -s n` (so
@@ -136,10 +136,33 @@ setting the option, and the accepted range is `0..255`:
 eng, _ := icmpengine.New(icmpengine.WithTTL(1)) // e.g. TTL 1 to only reach the first hop
 ```
 
-The CLI exposes these as `-size` (bytes), `-dscp` (0–63) and `-ttl` (1–255):
+**Source address** is engine-level. `WithSource(addr)` binds the sockets so echo
+requests leave from a specific local address (useful on multi-homed hosts). The
+address applies to its own family only (an IPv4 source binds the IPv4 socket and
+leaves IPv6 on the wildcard, and vice versa); binding a non-local address makes
+`Start` fail:
+
+```go
+eng, _ := icmpengine.New(icmpengine.WithSource(netip.MustParseAddr("10.0.0.5")))
+```
+
+**Don't-Fragment** is engine-level and Linux-only. `WithDontFragment(true)` sets
+the IPv4 DF bit (and the IPv6 equivalent) by enabling path-MTU discovery on the
+socket (`IP_MTU_DISCOVER = IP_PMTUDISC_DO`) — the same trick `ping -M do` uses,
+so **no raw socket / `CAP_NET_RAW` is required**. Combined with `PayloadSize` it
+probes the path MTU. On non-Linux platforms `Start` returns
+`ErrDontFragmentUnsupported`:
+
+```go
+eng, _ := icmpengine.New(icmpengine.WithDontFragment(true))
+res, _ := eng.Ping(ctx, addr, 1, 0, icmpengine.PayloadSize(1472)) // fails if the path MTU is smaller
+```
+
+The CLI exposes these as `-size` (bytes), `-dscp` (0–63), `-ttl` (1–255),
+`-source` (bind address) and `-df` (Don't-Fragment):
 
 ```
-icmpengine -dest 8.8.8.8,2001:4860:4860::8888 -count 5 -size 56 -dscp 46 -ttl 64
+icmpengine -dest 8.8.8.8,2001:4860:4860::8888 -count 5 -size 56 -dscp 46 -ttl 64 -df
 ```
 
 ### Expiry backend

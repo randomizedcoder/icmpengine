@@ -57,6 +57,10 @@ var (
 	// ErrTTLRange is returned by New when a WithTTL value is outside [0, 255]
 	// (0 means keep the kernel default).
 	ErrTTLRange = errors.New("icmpengine: ttl out of range [0,255]")
+	// ErrDontFragmentUnsupported is returned by Start when WithDontFragment was
+	// set on a platform where the engine cannot set it on non-privileged sockets
+	// (everything except Linux).
+	ErrDontFragmentUnsupported = errors.New("icmpengine: dont fragment is only supported on linux")
 )
 
 // maxSequence is the largest ICMP sequence number (16 bits).
@@ -107,6 +111,8 @@ type config struct {
 	backend      Backend
 	dscp         int
 	ttl          int
+	source       netip.Addr
+	dontFragment bool
 }
 
 // Option configures an Engine created by New.
@@ -162,6 +168,22 @@ func WithDSCP(v int) Option { return func(c *config) { c.dscp = v } }
 // rejected by New.
 func WithTTL(n int) Option { return func(c *config) { c.ttl = n } }
 
+// WithSource binds the engine's sockets to a specific source address, so echo
+// requests leave from that address (useful on multi-homed hosts). The address
+// applies to its own family only: an IPv4 source binds the IPv4 socket and
+// leaves the IPv6 socket on its default (and vice versa). A zero Addr (the
+// default) binds to the wildcard address. Binding is done at Start; an address
+// that is not a local address makes Start fail.
+func WithSource(addr netip.Addr) Option { return func(c *config) { c.source = addr } }
+
+// WithDontFragment sets the IPv4 Don't-Fragment bit (and the IPv6 equivalent) on
+// outgoing echo requests by enabling path-MTU discovery on the socket
+// (IP_MTU_DISCOVER / IPV6_MTU_DISCOVER = DO). Combined with WithPayloadSize it
+// lets a caller probe the path MTU without privileged raw sockets. It is applied
+// at Start; on platforms other than Linux, Start returns
+// ErrDontFragmentUnsupported. Defaults to false.
+func WithDontFragment(b bool) Option { return func(c *config) { c.dontFragment = b } }
+
 // Engine sends ICMP echo requests and matches them to replies. Create one with
 // New, Start it, call Ping/PingAll, then Close it. An Engine is safe for
 // concurrent use by multiple goroutines. It implements io.Closer.
@@ -176,6 +198,8 @@ type Engine struct {
 	hackSysctl   bool
 	dscp         int
 	ttl          int
+	source       netip.Addr
+	dontFragment bool
 	pid          int
 	eid          int
 
@@ -261,6 +285,8 @@ func New(opts ...Option) (*Engine, error) {
 		hackSysctl:   c.hackSysctl,
 		dscp:         c.dscp,
 		ttl:          c.ttl,
+		source:       c.source.Unmap(),
+		dontFragment: c.dontFragment,
 		pid:          os.Getpid() & 0xffff,
 		eid:          os.Geteuid(),
 		sockets:      make(map[protocol]*icmp.PacketConn),
