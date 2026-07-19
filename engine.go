@@ -119,7 +119,7 @@ func WithFakeSuccess(b bool) Option { return func(c *config) { c.fakeSuccess = b
 func WithHackSysctl(b bool) Option { return func(c *config) { c.hackSysctl = b } }
 
 // WithExpiryBackend selects the data structure used to track outstanding pings.
-// Defaults to BackendHeap. BackendBTree uses github.com/google/btree.
+// Defaults to BackendDaryHeap (the fastest in benchmarks); see docs/backends.md.
 func WithExpiryBackend(b Backend) Option { return func(c *config) { c.backend = b } }
 
 // Engine sends ICMP echo requests and matches them to replies. Create one with
@@ -182,6 +182,7 @@ func New(opts ...Option) (*Engine, error) {
 		readDeadline: time.Second,
 		receivers4:   defaultReceivers4,
 		receivers6:   defaultReceivers6,
+		backend:      BackendDaryHeap, // fastest across the benchmarks; see docs/backends.md
 	}
 	for _, o := range opts {
 		o(&c)

@@ -23,7 +23,7 @@ import (
 // is scheduling, channel sends and timers, but the queue is a real fraction of
 // it. Measured here heap beats btree by roughly 9% at 100 targets and ~17% at
 // 1000, and the tracker micro-benchmark (BenchmarkTracker) shows the gap widening
-// to multiples at tens of thousands outstanding. BackendHeap is the default.
+// to multiples at tens of thousands outstanding. BackendDaryHeap is the default.
 func BenchmarkEngineFleet(b *testing.B) {
 	backends := []struct {
 		name string

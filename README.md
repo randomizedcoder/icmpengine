@@ -109,23 +109,24 @@ Outstanding pings are tracked in a swappable "expiry tracker" (a priority queue
 with arbitrary removal). Six backends are built in and selectable at construction,
 all validated by the same correctness suite:
 
-- `icmpengine.BackendHeap` — `container/heap` binary min-heap (**default**; O(1) peek, no external dependency).
-- `icmpengine.BackendDaryHeap` — 8-ary array heap (**fastest** on the realistic workload).
+- `icmpengine.BackendDaryHeap` — 8-ary array heap (**default**; fastest on the realistic workload, O(1) peek, no external dependency).
+- `icmpengine.BackendHeap` — `container/heap` binary min-heap (stdlib, O(1) peek, no external dependency).
 - `icmpengine.BackendPairing` — pairing heap.
 - `icmpengine.BackendBTree` — [`github.com/google/btree`](https://github.com/google/btree).
 - `icmpengine.BackendRadix` — fixed-base radix trie.
 - `icmpengine.BackendTimingWheel` — hierarchical timing wheel + btree overflow.
 
 ```go
-eng, _ := icmpengine.New(icmpengine.WithExpiryBackend(icmpengine.BackendDaryHeap))
+eng, _ := icmpengine.New(icmpengine.WithExpiryBackend(icmpengine.BackendHeap)) // opt into the stdlib heap
 ```
 
-The CLI exposes this as `-backend heap|dary|pairing|btree|radix|wheel`. `BackendHeap`
-remains the default, but benchmarking across `uniform` and `mixed` (heterogeneous
-per-ping timeouts µs…hours) workloads plus the engine-level fleet shows the **8-ary
-heap is consistently fastest** (same allocations, just a shallower, more
-cache-friendly array). The flat array heaps beat the pointer/bucket structures
-because at these sizes cache behavior and constant factors decide it, not asymptotics.
+The CLI exposes this as `-backend heap|dary|pairing|btree|radix|wheel`. The
+**8-ary heap is the default** — benchmarking across `uniform` and `mixed`
+(heterogeneous per-ping timeouts µs…hours) workloads plus the engine-level fleet
+shows it consistently fastest, at the same allocations as the binary heap (just a
+shallower, more cache-friendly array). The flat array heaps beat the pointer/bucket
+structures because at these sizes cache behavior and constant factors decide it,
+not asymptotics.
 
 See **[docs/backends.md](./docs/backends.md)** for a per-backend guide (what each
 is, pros/cons, when to pick it) and **[docs/benchmarking.md](./docs/benchmarking.md)**
