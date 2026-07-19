@@ -120,10 +120,15 @@ The CLI exposes this as `-backend heap|btree`. `BackendHeap` is the default.
 under two workloads: `uniform` (one timeout for all pings — monotonic expiries)
 and `mixed` (heterogeneous per-ping timeouts µs…hours with a large resident tail
 and out-of-order removals). The heap wins both, and its lead *widens* with size
-under `mixed` (e.g. ~730ns vs ~2130ns/op at 100k outstanding) — a binary heap's
+under `mixed` (e.g. ~690ns vs ~1810ns/op at 100k outstanding) — a binary heap's
 contiguous, cache-friendly array beats a btree's pointer-chased nodes for a pure
 priority-queue workload that never needs ordered iteration. btree remains a
 one-line option for anyone whose workload differs.
+
+See [docs/benchmarking.md](./docs/benchmarking.md) for the full methodology,
+numbers, engine-level results, and a survey of other data structures considered
+(d-ary heaps, hierarchical timing wheels, radix heaps, and why they weren't
+chosen).
 
 <img src="./icmpengine.png" alt="xtcp diagram" width="75%" height="75%"/>
 
