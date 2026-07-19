@@ -11,13 +11,17 @@ import (
 )
 
 // configureSocket applies the per-socket IP options the engine sets once, at
-// open time: DSCP marking and TTL / hop limit. IPv4 exposes both only as
-// persistent socket-level options, so they are set here rather than per packet.
-func configureSocket(sock *icmp.PacketConn, p protocol, dscp, ttl int) error {
+// open time: DSCP marking, TTL / hop limit and the Don't-Fragment bit. IPv4
+// exposes these only as persistent socket-level options, so they are set here
+// rather than per packet.
+func configureSocket(sock *icmp.PacketConn, p protocol, dscp, ttl int, dontFragment bool) error {
 	if err := applyDSCP(sock, p, dscp); err != nil {
 		return err
 	}
-	return applyTTL(sock, p, ttl)
+	if err := applyTTL(sock, p, ttl); err != nil {
+		return err
+	}
+	return applyDontFragment(sock, p, dontFragment)
 }
 
 // applyDSCP writes the 6-bit DSCP value into the socket's IPv4 ToS / IPv6
@@ -67,6 +71,11 @@ func (e *Engine) openSockets() error {
 
 	for _, p := range e.protocols {
 		network, address := networkForProtocol(p)
+		// Bind to the configured source for its own family; the other family
+		// keeps the wildcard address.
+		if e.source.IsValid() && e.source.Is4() == (p == proto4) {
+			address = e.source.String()
+		}
 		var (
 			sock      *icmp.PacketConn
 			listenErr error
@@ -91,7 +100,7 @@ func (e *Engine) openSockets() error {
 			}
 			return fmt.Errorf("icmpengine: opening %s socket: %w (hint: sudo sysctl -w net.ipv4.ping_group_range=\"0 2147483647\")", network, listenErr)
 		}
-		if err := configureSocket(sock, p, e.dscp, e.ttl); err != nil {
+		if err := configureSocket(sock, p, e.dscp, e.ttl, e.dontFragment); err != nil {
 			_ = sock.Close()
 			for _, op := range e.protocols {
 				if s, ok := e.sockets[op]; ok {

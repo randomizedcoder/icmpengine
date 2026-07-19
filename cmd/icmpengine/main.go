@@ -42,6 +42,8 @@ func main() {
 	size := flag.Int("size", 0, "ICMP payload size in bytes appended after the 8-byte header (like ping -s)")
 	dscp := flag.Int("dscp", 0, "DSCP class 0-63 to mark echo requests (IPv4 ToS / IPv6 Traffic Class)")
 	ttl := flag.Int("ttl", 64, "IPv4 TTL / IPv6 hop limit for echo requests (1-255; 0 = kernel default)")
+	source := flag.String("source", "", "Source IP address to bind (multi-homed hosts); empty = wildcard")
+	df := flag.Bool("df", false, "Set the Don't-Fragment bit (Linux only; path-MTU discovery)")
 
 	version := flag.Bool("version", false, "show version")
 	logLevel := flag.String("log", "info", "Log level: debug, info, warn, error")
@@ -78,7 +80,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	eng, err := icmpengine.New(
+	opts := []icmpengine.Option{
 		icmpengine.WithLogger(logger),
 		icmpengine.WithTimeout(*timeout),
 		icmpengine.WithReadDeadline(*readDeadline),
@@ -87,7 +89,18 @@ func main() {
 		icmpengine.WithExpiryBackend(expiryBackend),
 		icmpengine.WithDSCP(*dscp),
 		icmpengine.WithTTL(*ttl),
-	)
+		icmpengine.WithDontFragment(*df),
+	}
+	if *source != "" {
+		srcAddr, perr := netip.ParseAddr(*source)
+		if perr != nil {
+			logger.Error("bad -source", "err", perr)
+			os.Exit(2)
+		}
+		opts = append(opts, icmpengine.WithSource(srcAddr))
+	}
+
+	eng, err := icmpengine.New(opts...)
 	if err != nil {
 		logger.Error("creating engine", "err", err)
 		os.Exit(1)
