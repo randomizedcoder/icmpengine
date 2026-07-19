@@ -2,6 +2,7 @@ package icmpengine_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -245,6 +246,22 @@ func TestPingErrors(t *testing.T) {
 	}
 	if _, err := eng.Ping(ctx, netip.Addr{}, 1, time.Millisecond); err == nil {
 		t.Error("invalid addr: want error")
+	}
+	if _, err := eng.Ping(ctx, netip.MustParseAddr("127.0.0.1"), 1, time.Millisecond, icmpengine.PingTimeout(-1)); !errors.Is(err, icmpengine.ErrTimeoutRange) {
+		t.Errorf("negative PingTimeout: err = %v, want ErrTimeoutRange", err)
+	}
+}
+
+// TestPingTimeoutOverride confirms a per-ping timeout is accepted and the ping
+// still succeeds in fake-success mode.
+func TestPingTimeoutOverride(t *testing.T) {
+	eng, ctx := newFakeEngine(t)
+	r, err := eng.Ping(ctx, netip.MustParseAddr("127.0.0.1"), 5, time.Millisecond, icmpengine.PingTimeout(3*time.Hour))
+	if err != nil {
+		t.Fatalf("Ping with PingTimeout: %v", err)
+	}
+	if r.Successes != 5 {
+		t.Errorf("successes = %d, want 5", r.Successes)
 	}
 }
 

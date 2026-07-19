@@ -3,6 +3,7 @@ package icmpengine
 import (
 	"container/list"
 	"fmt"
+	"math/rand/v2"
 	"net/netip"
 	"testing"
 	"time"
@@ -96,14 +97,27 @@ func makeBenchAddrs(n int) []netip.Addr {
 	return addrs
 }
 
-// BenchmarkTracker models steady-state expiry churn: N outstanding pings (one
-// per address), then per iteration remove one by (addr,seq), push a replacement
-// with a later expiry, and peek the soonest — the exact mix the receiver and
-// expirer drive on every packet.
+// BenchmarkTracker compares the expiry backends under two workloads:
+//
+//   - uniform: every entry uses the same timeout, so expiries arrive in insertion
+//     order (monotonic). This is the heap's — and the list's — best case, and is
+//     what an engine with a single WithTimeout produces.
+//   - mixed:   heterogeneous per-ping timeouts (microseconds to hours) plus a
+//     large resident tail of long-timeout entries, with out-of-order removals.
+//     This is real fleets where some hosts answer in microseconds while
+//     interplanetary pings sit outstanding for hours. Inserts land at random
+//     positions in the ordered structure — the case that actually stresses it.
+//
+// The container/list baseline is only correct when expiries are monotonic, so it
+// runs in the uniform workload only.
 func BenchmarkTracker(b *testing.B) {
+	b.Run("uniform", benchUniform)
+	b.Run("mixed", benchMixed)
+}
+
+func benchUniform(b *testing.B) {
 	sizes := []int{1, 10, 100, 1000, 10000}
 	base := time.Unix(1_700_000_000, 0)
-
 	for _, bk := range benchBackends {
 		for _, n := range sizes {
 			b.Run(fmt.Sprintf("%s/N=%d", bk.name, n), func(b *testing.B) {
@@ -131,4 +145,53 @@ func BenchmarkTracker(b *testing.B) {
 			})
 		}
 	}
+}
+
+// mixedBackends excludes the list baseline (invalid under heterogeneous expiry).
+var mixedBackends = benchBackends[:2] // heap, btree
+
+func benchMixed(b *testing.B) {
+	sizes := []int{100, 1000, 10000, 100000}
+	base := time.Unix(1_700_000_000, 0)
+
+	for _, bk := range mixedBackends {
+		for _, n := range sizes {
+			b.Run(fmt.Sprintf("%s/N=%d", bk.name, n), func(b *testing.B) {
+				addrs := makeBenchAddrs(n)
+				seqs := make([]sequence, n)
+				q := bk.make()
+				// Deterministic per (backend,N) so every backend sees identical
+				// expiry sequences — an apples-to-apples comparison.
+				rng := rand.New(rand.NewPCG(0x9e3779b97f4a7c15, uint64(n)))
+
+				// Half of each set is a long-resident "interplanetary" tail that
+				// never churns; the rest are near-term and constantly replaced.
+				resident := n / 2
+				for i := 0; i < n; i++ {
+					q.push(&pending{addr: addrs[i], send: base, expiry: base.Add(mixedExpiry(rng, i < resident))})
+				}
+
+				churn := n - resident
+				b.ReportAllocs()
+				i := 0
+				for b.Loop() {
+					idx := resident + i%churn       // round-robin the near tail
+					q.remove(addrs[idx], seqs[idx]) // reply arrives out of expiry order
+					seqs[idx]++
+					q.push(&pending{addr: addrs[idx], seq: seqs[idx], send: base, expiry: base.Add(mixedExpiry(rng, false))})
+					q.peek() // expirer reads the soonest
+					i++
+				}
+			})
+		}
+	}
+}
+
+// mixedExpiry returns a heterogeneous expiry offset: resident entries expire far
+// in the future (hours), near entries span microseconds to a few seconds.
+func mixedExpiry(rng *rand.Rand, resident bool) time.Duration {
+	if resident {
+		return time.Hour + time.Duration(rng.Int64N(int64(3*time.Hour)))
+	}
+	return time.Microsecond + time.Duration(rng.Int64N(int64(5*time.Second)))
 }

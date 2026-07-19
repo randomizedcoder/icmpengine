@@ -47,6 +47,8 @@ var (
 	// ErrInvalidAddr is returned by Ping when the destination address is not
 	// a valid IPv4 or IPv6 address.
 	ErrInvalidAddr = errors.New("icmpengine: invalid destination address")
+	// ErrTimeoutRange is returned by Ping when a PingTimeout value is negative.
+	ErrTimeoutRange = errors.New("icmpengine: ping timeout must be >= 0")
 )
 
 // maxSequence is the largest ICMP sequence number (16 bits).
@@ -134,6 +136,11 @@ type Engine struct {
 	hackSysctl   bool
 	pid          int
 	eid          int
+
+	// responder, when non-nil, makes the fake-success path deliver a simulated
+	// RTT (or a drop/timeout) instead of an instant success. It is a test-only
+	// hook installed via export_test.go before Start, so it needs no locking.
+	responder func(netip.Addr, sequence) (time.Duration, bool)
 
 	startOnce sync.Once
 	closeOnce sync.Once

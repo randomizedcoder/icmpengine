@@ -7,7 +7,7 @@ timeouts.
 Key features:
 - One IPv4 socket and one IPv6 socket; matches replies to requests across many destinations concurrently.
 - Does not wait for a packet's timeout before sending the next — outstanding pings are tracked centrally.
-- A single expiry timer tracks the soonest-expiring outstanding ping using [container/heap](https://pkg.go.dev/container/heap) (a typed priority queue), so timeouts need not all be identical.
+- A single expiry timer tracks the soonest-expiring outstanding ping using [container/heap](https://pkg.go.dev/container/heap) (a typed priority queue). Timeouts are per-ping, so one engine can mix a 10ms LAN host and an hours-away link (see `PingTimeout`).
 - Built to embed: `context.Context` cancellation, functional-options construction, errors returned instead of `log.Fatal`, and standard-library [log/slog](https://pkg.go.dev/log/slog) logging (pass `nil` for none — no logging dependency).
 - Leverages [golang.org/x/net/icmp](https://pkg.go.dev/golang.org/x/net/icmp) and IPPROTO_ICMP NonPrivilegedPing sockets ([lwn.net/Articles/422330](https://lwn.net/Articles/422330/)).
 - Uses the standard library [net/netip](https://pkg.go.dev/net/netip) IP type.
@@ -87,6 +87,22 @@ The engine logs via `log/slog`. Pass `icmpengine.WithLogger(l)` to supply a
 `*slog.Logger`, or omit it (or pass `nil`) to disable logging entirely — there is
 no logging dependency to pull in.
 
+### Per-ping timeouts
+
+`WithTimeout` sets the engine's default, but each `Ping` (and each `PingAll`
+`Target`) can override it with `PingTimeout`, so different destinations can wait
+different amounts of time — a 10ms LAN host and an hours-away interplanetary link
+in the same engine:
+
+```go
+res, _ := eng.Ping(ctx, lan,  5, time.Second, icmpengine.PingTimeout(10*time.Millisecond))
+res, _ := eng.Ping(ctx, mars, 5, time.Minute, icmpengine.PingTimeout(3*time.Hour))
+```
+
+The timeout machinery is covered by deterministic `testing/synctest` tests that
+exercise the full range (LAN microseconds → Mars-rover hours) in fake time, so a
+3-hour timeout test runs in microseconds.
+
 ### Expiry backend
 
 Outstanding pings are tracked in a swappable "expiry tracker" (a priority queue
@@ -99,10 +115,20 @@ with arbitrary removal). Two backends are built in and selectable at constructio
 eng, _ := icmpengine.New(icmpengine.WithExpiryBackend(icmpengine.BackendBTree))
 ```
 
-The CLI exposes this as `-backend heap|btree`. `BackendHeap` is the default: the
-`BenchmarkTracker` micro-benchmark (`go test -bench=Tracker -benchmem`) shows the
-heap out-performing btree for this workload (frequent peek-soonest + single
-insert/remove), so btree is offered as an option rather than the default.
+The CLI exposes this as `-backend heap|btree`. `BackendHeap` is the default.
+`BenchmarkTracker` (`go test -bench=Tracker -benchmem`) compares the backends
+under two workloads: `uniform` (one timeout for all pings — monotonic expiries)
+and `mixed` (heterogeneous per-ping timeouts µs…hours with a large resident tail
+and out-of-order removals). The heap wins both, and its lead *widens* with size
+under `mixed` (e.g. ~690ns vs ~1810ns/op at 100k outstanding) — a binary heap's
+contiguous, cache-friendly array beats a btree's pointer-chased nodes for a pure
+priority-queue workload that never needs ordered iteration. btree remains a
+one-line option for anyone whose workload differs.
+
+See [docs/benchmarking.md](./docs/benchmarking.md) for the full methodology,
+numbers, engine-level results, and a survey of other data structures considered
+(d-ary heaps, hierarchical timing wheels, radix heaps, and why they weren't
+chosen).
 
 <img src="./icmpengine.png" alt="xtcp diagram" width="75%" height="75%"/>
 
