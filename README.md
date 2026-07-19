@@ -11,7 +11,7 @@ Key features:
 - Built to embed: `context.Context` cancellation, functional-options construction, errors returned instead of `log.Fatal`, and standard-library [log/slog](https://pkg.go.dev/log/slog) logging (pass `nil` for none — no logging dependency).
 - Leverages [golang.org/x/net/icmp](https://pkg.go.dev/golang.org/x/net/icmp) and IPPROTO_ICMP NonPrivilegedPing sockets ([lwn.net/Articles/422330](https://lwn.net/Articles/422330/)).
 - Uses the standard library [net/netip](https://pkg.go.dev/net/netip) IP type.
-- Note: packet size and DSCP bits are NOT currently supported.
+- Configurable ICMP payload size and DSCP marking, for both IPv4 and IPv6 (see [Packet size and DSCP](#packet-size-and-dscp)).
 
 ```
 go get github.com/randomizedcoder/icmpengine
@@ -102,6 +102,45 @@ res, _ := eng.Ping(ctx, mars, 5, time.Minute, icmpengine.PingTimeout(3*time.Hour
 The timeout machinery is covered by deterministic `testing/synctest` tests that
 exercise the full range (LAN microseconds → Mars-rover hours) in fake time, so a
 3-hour timeout test runs in microseconds.
+
+### Packet size, DSCP and TTL
+
+**Payload size** is a per-ping option. `PayloadSize(n)` appends `n` data bytes
+after the 8-byte ICMP header — the same semantics as `ping -s n` (so
+`PayloadSize(56)` yields a 64-byte ICMP message; the kernel adds the IP header).
+It defaults to 0 (a bare echo request) and accepts `0..65500`. It works
+identically for IPv4 and IPv6:
+
+```go
+res, _ := eng.Ping(ctx, addr, 5, time.Second, icmpengine.PayloadSize(56))
+```
+
+**DSCP** is an engine-level option. `WithDSCP(v)` marks every echo request with
+the 6-bit DiffServ code point `v` (`0..63`), written into the IPv4 ToS / IPv6
+Traffic Class byte as `v<<2` (the low two ECN bits stay zero). It is applied
+once, at `Start`, to both the IPv4 and IPv6 socket. It is engine-wide rather
+than per-ping because the engine shares one socket per family across all
+concurrent pings, and IPv4 only exposes ToS as a persistent socket option:
+
+```go
+eng, _ := icmpengine.New(icmpengine.WithDSCP(46)) // 46 = EF (Expedited Forwarding)
+```
+
+**TTL / hop limit** is also engine-level. `WithTTL(n)` sets the outgoing IPv4
+TTL (and the equivalent IPv6 hop limit) for every echo request, applied once at
+`Start` to both sockets via `SetTTL` / `SetHopLimit`. It defaults to **64** (the
+Linux `ping` / kernel default); a value of 0 keeps the kernel default without
+setting the option, and the accepted range is `0..255`:
+
+```go
+eng, _ := icmpengine.New(icmpengine.WithTTL(1)) // e.g. TTL 1 to only reach the first hop
+```
+
+The CLI exposes these as `-size` (bytes), `-dscp` (0–63) and `-ttl` (1–255):
+
+```
+icmpengine -dest 8.8.8.8,2001:4860:4860::8888 -count 5 -size 56 -dscp 46 -ttl 64
+```
 
 ### Expiry backend
 

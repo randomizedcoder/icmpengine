@@ -250,6 +250,12 @@ func TestPingErrors(t *testing.T) {
 	if _, err := eng.Ping(ctx, netip.MustParseAddr("127.0.0.1"), 1, time.Millisecond, icmpengine.PingTimeout(-1)); !errors.Is(err, icmpengine.ErrTimeoutRange) {
 		t.Errorf("negative PingTimeout: err = %v, want ErrTimeoutRange", err)
 	}
+	if _, err := eng.Ping(ctx, netip.MustParseAddr("127.0.0.1"), 1, time.Millisecond, icmpengine.PayloadSize(-1)); !errors.Is(err, icmpengine.ErrPayloadSizeRange) {
+		t.Errorf("negative PayloadSize: err = %v, want ErrPayloadSizeRange", err)
+	}
+	if _, err := eng.Ping(ctx, netip.MustParseAddr("127.0.0.1"), 1, time.Millisecond, icmpengine.PayloadSize(65501)); !errors.Is(err, icmpengine.ErrPayloadSizeRange) {
+		t.Errorf("oversized PayloadSize: err = %v, want ErrPayloadSizeRange", err)
+	}
 }
 
 // TestPingTimeoutOverride confirms a per-ping timeout is accepted and the ping
@@ -286,6 +292,24 @@ func TestNewValidation(t *testing.T) {
 	}
 	if _, err := icmpengine.New(icmpengine.WithReceivers(0, 0)); err == nil {
 		t.Error("no receivers (non-fake): want error")
+	}
+	if _, err := icmpengine.New(icmpengine.WithFakeSuccess(true), icmpengine.WithDSCP(-1)); !errors.Is(err, icmpengine.ErrDSCPRange) {
+		t.Errorf("dscp=-1: err = %v, want ErrDSCPRange", err)
+	}
+	if _, err := icmpengine.New(icmpengine.WithFakeSuccess(true), icmpengine.WithDSCP(64)); !errors.Is(err, icmpengine.ErrDSCPRange) {
+		t.Errorf("dscp=64: err = %v, want ErrDSCPRange", err)
+	}
+	if _, err := icmpengine.New(icmpengine.WithFakeSuccess(true), icmpengine.WithDSCP(46)); err != nil {
+		t.Errorf("dscp=46 (EF): unexpected err = %v", err)
+	}
+	if _, err := icmpengine.New(icmpengine.WithFakeSuccess(true), icmpengine.WithTTL(-1)); !errors.Is(err, icmpengine.ErrTTLRange) {
+		t.Errorf("ttl=-1: err = %v, want ErrTTLRange", err)
+	}
+	if _, err := icmpengine.New(icmpengine.WithFakeSuccess(true), icmpengine.WithTTL(256)); !errors.Is(err, icmpengine.ErrTTLRange) {
+		t.Errorf("ttl=256: err = %v, want ErrTTLRange", err)
+	}
+	if _, err := icmpengine.New(icmpengine.WithFakeSuccess(true), icmpengine.WithTTL(1)); err != nil {
+		t.Errorf("ttl=1: unexpected err = %v", err)
 	}
 }
 
