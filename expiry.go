@@ -48,6 +48,21 @@ const (
 	BackendHeap Backend = iota
 	// BackendBTree uses github.com/google/btree. All operations are O(log n).
 	BackendBTree
+	// BackendDaryHeap uses an 8-ary array heap — shallower than the binary heap,
+	// which benchmarks faster on this remove-heavy workload (see BenchmarkDaryFanout).
+	BackendDaryHeap
+	// BackendRadix uses a fixed-base MSD radix trie over the 64-bit expiry key;
+	// all operations are O(64/8)=O(8), independent of n.
+	BackendRadix
+	// BackendPairing uses a pairing heap (O(1) push/peek).
+	BackendPairing
+	// BackendTimingWheel uses a hierarchical absolute-time timing wheel with a
+	// btree overflow. Best under near-monotonic load; see expiry_wheel.go.
+	BackendTimingWheel
+
+	// daryFanout is the fan-out for BackendDaryHeap (8 benchmarks best; see
+	// BenchmarkDaryFanout in expiry_bench_test.go).
+	daryFanout = 8
 )
 
 // String implements fmt.Stringer for nicer logging and flag handling.
@@ -55,6 +70,14 @@ func (b Backend) String() string {
 	switch b {
 	case BackendBTree:
 		return "btree"
+	case BackendDaryHeap:
+		return "dary"
+	case BackendRadix:
+		return "radix"
+	case BackendPairing:
+		return "pairing"
+	case BackendTimingWheel:
+		return "wheel"
 	default:
 		return "heap"
 	}
@@ -62,8 +85,18 @@ func (b Backend) String() string {
 
 // newExpiryTracker builds the tracker for the selected backend.
 func newExpiryTracker(b Backend) expiryTracker {
-	if b == BackendBTree {
+	switch b {
+	case BackendBTree:
 		return newBTreeExpiry()
+	case BackendDaryHeap:
+		return newDaryExpiry(daryFanout)
+	case BackendRadix:
+		return newRadixExpiry()
+	case BackendPairing:
+		return newPairingExpiry()
+	case BackendTimingWheel:
+		return newWheelExpiry()
+	default:
+		return newHeapExpiry()
 	}
-	return newHeapExpiry()
 }

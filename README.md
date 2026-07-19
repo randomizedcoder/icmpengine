@@ -106,29 +106,30 @@ exercise the full range (LAN microseconds → Mars-rover hours) in fake time, so
 ### Expiry backend
 
 Outstanding pings are tracked in a swappable "expiry tracker" (a priority queue
-with arbitrary removal). Two backends are built in and selectable at construction:
+with arbitrary removal). Six backends are built in and selectable at construction,
+all validated by the same correctness suite:
 
-- `icmpengine.BackendHeap` — `container/heap` min-heap (default; peek is O(1), no external dependency).
-- `icmpengine.BackendBTree` — [`github.com/google/btree`](https://github.com/google/btree) (all ops O(log n)).
+- `icmpengine.BackendHeap` — `container/heap` binary min-heap (**default**; O(1) peek, no external dependency).
+- `icmpengine.BackendDaryHeap` — 8-ary array heap (**fastest** on the realistic workload).
+- `icmpengine.BackendPairing` — pairing heap.
+- `icmpengine.BackendBTree` — [`github.com/google/btree`](https://github.com/google/btree).
+- `icmpengine.BackendRadix` — fixed-base radix trie.
+- `icmpengine.BackendTimingWheel` — hierarchical timing wheel + btree overflow.
 
 ```go
-eng, _ := icmpengine.New(icmpengine.WithExpiryBackend(icmpengine.BackendBTree))
+eng, _ := icmpengine.New(icmpengine.WithExpiryBackend(icmpengine.BackendDaryHeap))
 ```
 
-The CLI exposes this as `-backend heap|btree`. `BackendHeap` is the default.
-`BenchmarkTracker` (`go test -bench=Tracker -benchmem`) compares the backends
-under two workloads: `uniform` (one timeout for all pings — monotonic expiries)
-and `mixed` (heterogeneous per-ping timeouts µs…hours with a large resident tail
-and out-of-order removals). The heap wins both, and its lead *widens* with size
-under `mixed` (e.g. ~690ns vs ~1810ns/op at 100k outstanding) — a binary heap's
-contiguous, cache-friendly array beats a btree's pointer-chased nodes for a pure
-priority-queue workload that never needs ordered iteration. btree remains a
-one-line option for anyone whose workload differs.
+The CLI exposes this as `-backend heap|dary|pairing|btree|radix|wheel`. `BackendHeap`
+remains the default, but benchmarking across `uniform` and `mixed` (heterogeneous
+per-ping timeouts µs…hours) workloads plus the engine-level fleet shows the **8-ary
+heap is consistently fastest** (same allocations, just a shallower, more
+cache-friendly array). The flat array heaps beat the pointer/bucket structures
+because at these sizes cache behavior and constant factors decide it, not asymptotics.
 
-See [docs/benchmarking.md](./docs/benchmarking.md) for the full methodology,
-numbers, engine-level results, and a survey of other data structures considered
-(d-ary heaps, hierarchical timing wheels, radix heaps, and why they weren't
-chosen).
+See **[docs/backends.md](./docs/backends.md)** for a per-backend guide (what each
+is, pros/cons, when to pick it) and **[docs/benchmarking.md](./docs/benchmarking.md)**
+for the full methodology, result tables, and the fan-out sweep.
 
 <img src="./icmpengine.png" alt="xtcp diagram" width="75%" height="75%"/>
 
