@@ -127,8 +127,9 @@ heap is consistently fastest** (same allocations, just a shallower, more
 cache-friendly array). The flat array heaps beat the pointer/bucket structures
 because at these sizes cache behavior and constant factors decide it, not asymptotics.
 
-See **[docs/benchmarking.md](./docs/benchmarking.md)** for the full methodology,
-per-backend result tables, the fan-out sweep, and why each structure fares as it does.
+See **[docs/backends.md](./docs/backends.md)** for a per-backend guide (what each
+is, pros/cons, when to pick it) and **[docs/benchmarking.md](./docs/benchmarking.md)**
+for the full methodology, result tables, and the fan-out sweep.
 
 <img src="./icmpengine.png" alt="xtcp diagram" width="75%" height="75%"/>
 
