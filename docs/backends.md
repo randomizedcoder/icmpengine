@@ -27,30 +27,30 @@ of pings outstanding at once.
 
 ## The backends
 
-### `BackendHeap` — binary `container/heap` *(default)*
+### `BackendDaryHeap` — 8-ary array heap *(default, fastest)*
+
+An array min-heap with fan-out 8 instead of 2. A shallower tree means sift-down
+touches fewer, more cache-local nodes. Fan-out 8 was chosen from a 2/4/8/16 sweep.
+
+- **Pros:** **fastest across the realistic (mixed) and engine-level benchmarks**,
+  at the *same* 3 allocs/op as the binary heap; O(1) peek, zero dependencies. This
+  is the **default**.
+- **Cons:** scans up to 8 children per sift step (cheap); slightly more code than
+  the stdlib heap (but covered by the shared correctness + differential-fuzz suite).
+- **Use when:** you want the best measured performance with no downside — i.e. leave
+  it as the default.
+
+### `BackendHeap` — binary `container/heap`
 
 A binary min-heap keyed by expiry plus an `addr→seq→*pending` index for O(1)
 lookup / O(log n) removal. Peek is O(1).
 
-- **Pros:** simple, well-understood, zero dependencies, O(1) peek, cache-friendly
-  contiguous array, 3 allocs/op.
-- **Cons:** slightly deeper than a higher-fan-out heap, so a touch slower on the
+- **Pros:** the standard library implementation — simplest and most familiar; zero
+  dependencies, O(1) peek, cache-friendly contiguous array, 3 allocs/op.
+- **Cons:** slightly deeper than the 8-ary heap, so a touch slower on the
   remove-heavy churn.
-- **Use when:** you want the safe, obvious default. It is the baseline everything
-  else is measured against.
-
-### `BackendDaryHeap` — 8-ary array heap *(fastest)*
-
-The same array-heap algorithm with fan-out 8 instead of 2. A shallower tree means
-sift-down touches fewer, more cache-local nodes.
-
-- **Pros:** **fastest across the realistic (mixed) and engine-level benchmarks**,
-  at the *same* 3 allocs/op as the binary heap; still O(1) peek, zero dependencies.
-  Fan-out 8 was chosen from a 2/4/8/16 sweep.
-- **Cons:** scans up to 8 children per sift step (cheap); marginally more code than
-  the stdlib heap.
-- **Use when:** you want the best measured performance with no downside. A one-line
-  swap from the default.
+- **Use when:** you prefer the stdlib structure, or as the baseline everything else
+  is measured against. A one-line opt-in.
 
 ### `BackendPairing` — pairing heap
 
@@ -109,8 +109,8 @@ ns/op on the dev machine — lower is better:
 
 | backend | N=1000 | N=100000 | allocs/op | notes |
 |---|--:|--:|--:|---|
-| **dary8** | **504** | **680** | 3 | fastest |
-| heap (default) | 540 | 732 | 3 | safe baseline |
+| **dary8 (default)** | **504** | **680** | 3 | fastest |
+| heap | 540 | 732 | 3 | stdlib binary heap |
 | pairing | 587 | 768 | 4 | best on uniform |
 | btree | 943 | 1906 | 3 | ordered iteration you don't need |
 | wheel | 871 | 1997 | 4 | large-N/monotonic specialist |
@@ -121,9 +121,10 @@ same ordering: dary8 < pairing < heap < btree < wheel < radix.
 
 ## Recommendation
 
-- **Default `BackendHeap`** is the safe choice and stays the default.
-- **`BackendDaryHeap` is the fastest** with no downside (same allocations) — a
-  one-line opt-in, and a reasonable future default.
+- **`BackendDaryHeap` is the default** — fastest across every workload with no
+  downside (same allocations as the binary heap), and validated by the full
+  correctness + differential-fuzz + race suite.
+- **`BackendHeap`** (stdlib binary heap) is a one-line opt-in if you prefer it.
 - The pointer/bucket structures (btree, wheel, radix) are correct and available,
   but at the fleet sizes icmpengine runs, **cache behavior and constant factors
   decide it, not asymptotics** — which is why the flat array heaps win.

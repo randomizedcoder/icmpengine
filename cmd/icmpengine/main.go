@@ -38,7 +38,7 @@ func main() {
 	r6 := flag.Int("rPP6", 2, "Receivers IPv6")
 	splayReceivers := flag.Bool("splay", false, "Splay the receiver start times")
 	concurrency := flag.Int("concurrency", 0, "Max concurrent pingers (0 = one per destination)")
-	backend := flag.String("backend", "heap", "Expiry-tracking backend: heap, btree, dary, radix, pairing or wheel")
+	backend := flag.String("backend", "dary", "Expiry-tracking backend: heap, btree, dary, radix, pairing or wheel")
 
 	version := flag.Bool("version", false, "show version")
 	logLevel := flag.String("log", "info", "Log level: debug, info, warn, error")

@@ -43,13 +43,14 @@ type expiryTracker interface {
 type Backend int
 
 const (
-	// BackendHeap uses container/heap (the default). Peek is O(1); push and
+	// BackendHeap uses container/heap, a binary min-heap. Peek is O(1); push and
 	// remove are O(log n). No external dependency.
 	BackendHeap Backend = iota
 	// BackendBTree uses github.com/google/btree. All operations are O(log n).
 	BackendBTree
 	// BackendDaryHeap uses an 8-ary array heap — shallower than the binary heap,
-	// which benchmarks faster on this remove-heavy workload (see BenchmarkDaryFanout).
+	// which benchmarks fastest on this remove-heavy workload (see BenchmarkDaryFanout).
+	// It is the default: New with no WithExpiryBackend uses it.
 	BackendDaryHeap
 	// BackendRadix uses a fixed-base MSD radix trie over the 64-bit expiry key;
 	// all operations are O(64/8)=O(8), independent of n.

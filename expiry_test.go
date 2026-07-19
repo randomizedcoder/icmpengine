@@ -33,6 +33,17 @@ func forEachBackend(t *testing.T, fn func(t *testing.T, q expiryTracker)) {
 	}
 }
 
+// TestDefaultBackend verifies New (with no WithExpiryBackend) uses the d-ary heap.
+func TestDefaultBackend(t *testing.T) {
+	e, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, ok := e.queue.(*daryExpiry); !ok {
+		t.Fatalf("default queue = %T, want *daryExpiry", e.queue)
+	}
+}
+
 // TestTrackerPeekOrder verifies peek always returns the soonest expiry,
 // regardless of insertion order.
 func TestTrackerPeekOrder(t *testing.T) {

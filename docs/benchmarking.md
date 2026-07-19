@@ -6,10 +6,11 @@ a **priority queue with arbitrary removal** — sits on the hot path of both the
 receiver and the expirer, so its performance matters. This note records how the
 implementation was chosen.
 
-**TL;DR:** the default is a `container/heap` binary heap (`BackendHeap`). It beat
-the alternatives across every workload we measured, and its lead grows with the
-number of concurrently-outstanding pings. A `github.com/google/btree` backend is
-available via `WithExpiryBackend(BackendBTree)` for anyone whose workload differs.
+**TL;DR:** the default is an **8-ary array heap** (`BackendDaryHeap`) — it is the
+fastest across every workload we measured, at the same allocations as a binary
+heap. Five other backends are available via `WithExpiryBackend` (binary heap,
+pairing heap, btree, radix trie, timing wheel); see [backends.md](./backends.md)
+for the per-backend guide.
 
 ## The operations
 
@@ -127,8 +128,8 @@ behind. (The 100-target row is noisy at millisecond scale.)
 - **The 8-ary heap (`BackendDaryHeap`) is the fastest structure** across the mixed
   and engine-level benchmarks, and ties the binary heap on uniform — same algorithm,
   same allocations, just a shallower tree with better cache behavior. It is the
-  low-risk "were we overlooking something?" win. (`BackendHeap` remains the default;
-  switching is a one-liner.)
+  low-risk "were we overlooking something?" win, and is now the **default**
+  (`BackendHeap`, the stdlib binary heap, is a one-line opt-in).
 - **Pairing heap** is genuinely competitive (best on uniform), at the cost of one
   extra allocation per entry for its node.
 - **btree** trails because pointer-chased nodes lose to a contiguous array for a pure
